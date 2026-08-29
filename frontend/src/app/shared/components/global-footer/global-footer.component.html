@@ -7,7 +7,7 @@
           @if (enterpriseInfo?.footer_img) {
             <img [src]="enterpriseInfo?.footer_img" [alt]="enterpriseInfo.title" height="60px" class="enterprise-logo">
           } @else {
-            <app-svg-images name="mempoolSpace" viewBox="0 0 500 126"></app-svg-images>
+            <img src="/resources/xc-mark.svg" alt="explorer.xmr.club" height="44">
           }
         </div>
         @if (!enterpriseInfo?.footer_img) {
