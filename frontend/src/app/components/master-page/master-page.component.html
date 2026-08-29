@@ -3,7 +3,7 @@
 
   <nav class="navbar navbar-expand-md navbar-dark">
   <!-- Large screen -->
-  <a class="navbar-brand d-none d-md-flex" [ngClass]="{'dual-logos': enterpriseInfo?.dualLogo}" [routerLink]="['/' | relativeUrl]" (click)="brandClick($event)" aria-label="monerospace.org dashboard" title="monerospace.org dashboard">
+  <a class="navbar-brand d-none d-md-flex" [ngClass]="{'dual-logos': enterpriseInfo?.dualLogo}" [routerLink]="['/' | relativeUrl]" (click)="brandClick($event)" aria-label="explorer.xmr.club dashboard" title="explorer.xmr.club dashboard">
     <ng-container *ngIf="{ val: connectionState$ | async } as connectionState">
       @if (enterpriseInfo) {
         <div class="subdomain_container">
@@ -23,7 +23,7 @@
     </ng-container>
   </a>
   <!-- Mobile -->
-  <a class="navbar-brand d-flex d-md-none justify-content-center" [ngClass]="{'dual-logos': enterpriseInfo?.dualLogo, 'me-0': enterpriseInfo?.dualLogo}" [routerLink]="['/' | relativeUrl]" (click)="brandClick($event)" aria-label="monerospace.org dashboard" title="monerospace.org dashboard">
+  <a class="navbar-brand d-flex d-md-none justify-content-center" [ngClass]="{'dual-logos': enterpriseInfo?.dualLogo, 'me-0': enterpriseInfo?.dualLogo}" [routerLink]="['/' | relativeUrl]" (click)="brandClick($event)" aria-label="explorer.xmr.club dashboard" title="explorer.xmr.club dashboard">
     <ng-container *ngIf="{ val: connectionState$ | async } as connectionState">
       @if (enterpriseInfo) {
         <div class="subdomain_container">
@@ -77,7 +77,7 @@
         </a>
       </li>
       <li class="nav-item" routerLinkActive="active" ariaCurrentWhenActive="page" id="btn-about">
-        <a class="nav-link" [routerLink]="['/about']" (click)="collapse()" aria-label="About monerospace.org" title="About monerospace.org">
+        <a class="nav-link" [routerLink]="['/about']" (click)="collapse()" aria-label="About explorer.xmr.club" title="About explorer.xmr.club">
           <div class="svg-wrapper"><app-svg-images name="nav-info-circle" width="21.59" height="100%"></app-svg-images></div>
         </a>
       </li>

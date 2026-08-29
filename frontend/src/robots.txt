@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://monerospace.org/sitemap.xml
+Sitemap: https://explorer.xmr.club/sitemap.xml
