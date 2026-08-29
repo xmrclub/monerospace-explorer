@@ -98,6 +98,10 @@ export class MoneroRoutes {
       // first). Mirrors mempool.space's pagination style. Used by the
       // /blocks list page.
       .get(this.prefix + 'blocks/:height', (req, res) => this.getBlocksFromHeight(req, res))
+      // /api/v1/block-height/:height — resolve a block height to its hash (text).
+      // The frontend hits /api/block-height/:height, which nginx rewrites to
+      // /api/v1/…, so this v1-prefixed alias is what actually gets matched.
+      .get(this.prefix + 'block-height/:height', (req, res) => this.getBlockHashByHeight(req, res))
       .get(this.prefix + 'block/:hash', (req, res) => this.getBlock(req, res))
       // /api/v1/block/:hash/summary — per-tx stripped data for the
       // upstream BlockComponent's WebGL tile visualization. Returns
