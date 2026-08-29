@@ -1,0 +1,57 @@
+<div class="container-xl" *ngIf="mempoolBlock$ | async as mempoolBlock">
+
+  <div class="title-block">
+    <h1>{{ ordinal$ | async }}</h1>
+    <button [routerLink]="['/' | relativeUrl]" class="btn btn-sm float-end">&#10005;</button>
+  </div>
+
+  <div class="clearfix"></div>
+
+  <div class="box">
+    <div class="row">
+      <div class="col-md">
+        <table class="table table-borderless table-striped">
+          <tbody>
+            <tr>
+              <td i18n="mempool-block.median-fee">Median fee</td>
+              <td>~<app-fee-rate [fee]="mempoolBlock.medianFee" rounding="1.0-0"></app-fee-rate></td>
+            </tr>
+            <tr>
+              <td i18n="mempool-block.fee-span">Fee span</td>
+              <td><span class="yellow-color">
+                {{ compactFeeRange(mempoolBlock) }} <span class="symbol">&#x0271;/B</span>
+              </span></td>
+            </tr>
+            <tr>
+              <td i18n="block.total-fees|Total fees in a block">Total fees</td>
+              <td><app-amount [satoshis]="mempoolBlock.totalFees" [digitsInfo]="'1.2-2'" [noFiat]="true"></app-amount> <span class="fiat"><app-fiat [value]="mempoolBlock.totalFees" digitsInfo="1.0-0"></app-fiat></span></td>
+            </tr>
+            <tr>
+              <td i18n="mempool-block.transactions">Transactions</td>
+              <td>{{ mempoolBlock.nTx }}</td>
+            </tr>
+            <tr>
+              <td i18n="mempool-block.size">Size</td>
+              <td>
+                <div class="progress">
+                  <div class="progress-bar progress-mempool {{ (network$ | async) }}" role="progressbar" [ngStyle]="{'width': blockFillStyle(mempoolBlock) }"></div>
+                  <div class="progress-text"><span [innerHTML]="mempoolBlock.blockSize | bytes: 2"></span> · {{ blockFillPercent(mempoolBlock) | number:'1.0-0' }}%</div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <app-fee-distribution-graph *ngIf="webGlEnabled" [transactions]="mempoolBlockTransactions$ | async" [feeRange]="mempoolBlock.feeRange" [vsize]="mempoolBlock.blockVSize" ></app-fee-distribution-graph>
+      </div>
+      <div class="col-md chart-container">
+        <div class="block-with-filters" *ngIf="webGlEnabled">
+          <app-mempool-block-overview [index]="mempoolBlockIndex" (txPreviewEvent)="setTxPreview($event)" [showFilters]="true"></app-mempool-block-overview>
+        </div>
+        <app-fee-distribution-graph *ngIf="!webGlEnabled" [transactions]="mempoolBlockTransactions$ | async" [feeRange]="mempoolBlock.feeRange" [vsize]="mempoolBlock.blockVSize" ></app-fee-distribution-graph>
+      </div>
+    </div>
+  </div>
+
+  <br>
+
+</div>

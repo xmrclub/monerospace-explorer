@@ -1,0 +1,9 @@
+@if (!textOnly) {
+  <div [class]="'alert ' + alertClass">
+    {{ errorContent }}
+  </div>
+} @else {
+  <span [class]="alertClass">
+    {{ errorContent }}
+  </span>
+}

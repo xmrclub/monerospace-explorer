@@ -1,0 +1,47 @@
+<!-- xmr-space: amount values arriving here are Monero atomic units
+     (1 XMR = 1e12 atomic). The variable is named `satoshis` for upstream
+     compatibility but should be read as "atomic units." Default view renders
+     XMR; the alternate branch renders raw atomic units.
+     RingCT-hidden case: tx vin/vout placeholders opt into blurHiddenAmount
+     because they encode 0 while the actual amount is a Pedersen commitment.
+     Real zero values, such as a block with zero fees, render normally. -->
+<ng-container *ngIf="blurHiddenAmount && satoshis === 0; else realAmount">
+  <span class="xmr-amount-blur" aria-label="Amount hidden by RingCT" title="Hidden by RingCT — provide a view key on the tx-detail page to decrypt">
+    <span class="xmr-amount-blur-fake">{{ blurredFake() }}</span>
+    <span class="symbol" [style]="unitStyle">XMR</span>
+  </span>
+</ng-container>
+
+<ng-template #realAmount>
+  <ng-container *ngIf="!noFiat && ignoreViewMode === false && (viewAmountMode$ | async) === 'fiat' && (conversions$ | async) as conversions; else viewFiatVin">
+    <span class="fiat" *ngIf="blockConversion; else noblockconversion">
+      {{ addPlus && satoshis >= 0 ? '+' : '' }}{{
+        (
+          (blockConversion.price[currency] > -1 ? blockConversion.price[currency] : null) ??
+          (blockConversion.price['USD']    > -1 ? blockConversion.price['USD'] * blockConversion.exchangeRates['USD' + currency] : null) ?? 0
+        ) * satoshis / 1000000000000 | fiatCurrency : digitsInfo : currency
+      }}
+    </span>
+    <ng-template #noblockconversion>
+      <span class="fiat" *ngIf="!forceBlockConversion; else zeroValue">{{ addPlus && satoshis >= 0 ? '+' : '' }}{{ (conversions[currency] > -1 ? conversions[currency] : 0) * satoshis / 1000000000000 | fiatCurrency : digitsInfo : currency }}
+      </span>
+    </ng-template>
+    <ng-template #zeroValue>
+      <span class="fiat">{{ 0 | fiatCurrency : digitsInfo : currency }}</span>
+    </ng-template>
+  </ng-container>
+
+  <ng-template #viewFiatVin>
+    @if ((viewAmountMode$ | async) === 'xmr' || (viewAmountMode$ | async) === 'fiat' || ignoreViewMode === true) {
+      &lrm;{{ addPlus && satoshis >= 0 ? '+' : '' }}{{ satoshis / 1000000000000 | number : digitsInfo }}
+      <span class="symbol" [style]="unitStyle">XMR</span>
+    } @else {
+      @if (digitsInfo === '1.8-8') {
+        &lrm;{{ addPlus && satoshis >= 0 ? '+' : '' }}{{ satoshis | number }}
+      } @else {
+        &lrm;{{ addPlus && satoshis >= 0 ? '+' : '' }}{{ satoshis | amountShortener : (satoshis < 1000 && satoshis > -1000 ? 0 : 1) : undefined : true }}
+      }
+      <span class="symbol" [style]="unitStyle">atomic</span>
+    }
+  </ng-template>
+</ng-template>

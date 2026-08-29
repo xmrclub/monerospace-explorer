@@ -1,0 +1,105 @@
+<app-indexing-progress *ngIf="!widget"></app-indexing-progress>
+
+<div class="container-xl" style="min-height: 335px" [ngClass]="{'widget': widget, 'full-height': !widget, 'legacy': !isMempoolModule}">
+  <div *ngIf="!widget" class="float-start" style="display: flex; width: 100%; align-items: center;">
+    <h1 i18n="master-page.blocks">Blocks</h1>
+    <app-svg-images name="blocks-2-3" style="width: 275px; max-width: 90%; margin-top: -10px"></app-svg-images>
+    <div *ngIf="!widget && isLoading" class="spinner-border" role="status"></div>
+  </div>
+
+  <div class="clearfix"></div>
+
+  <div style="min-height: 295px">
+    <table class="table table-borderless">
+      <thead>
+        <th class="height text-start" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}" i18n="latest-blocks.height">Height</th>
+        <th *ngIf="isMempoolModule" class="pool text-start" [ngClass]="{'widget': widget}" i18n="latest-blocks.pool">Pool</th>
+        <th class="timestamp" i18n="latest-blocks.timestamp" *ngIf="!widget" [class]="isMempoolModule ? '' : 'legacy'">Timestamp</th>
+        <th *ngIf="isMempoolModule" class="reward text-end" i18n="latest-blocks.reward" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}"
+          i18n-ngbTooltip="latest-blocks.reward" ngbTooltip="Reward" placement="bottom" #reward [disableTooltip]="!isEllipsisActive(reward)">Reward</th>
+        <th *ngIf="isMempoolModule" class="fees text-end" i18n="latest-blocks.fees" [class]="isMempoolModule ? '' : 'legacy'">Fees</th>
+        <th *ngIf="isMempoolModule" class="txs text-end" i18n="dashboard.txs" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}"
+          i18n-ngbTooltip="dashboard.txs" ngbTooltip="TXs" placement="bottom" #txs [disableTooltip]="!isEllipsisActive(txs)">TXs</th>
+        <th *ngIf="!isMempoolModule" class="txs text-end" i18n="dashboard.txs" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">Transactions</th>
+        <th class="size" i18n="latest-blocks.size" *ngIf="!widget" [class]="isMempoolModule ? '' : 'legacy'">Size</th>
+      </thead>
+      <tbody *ngIf="blocks$ | async as blocks; else skeleton" [style]="isLoading ? 'opacity: 0.75' : ''">
+        <tr *ngFor="let block of blocks; let i= index; trackBy: trackByBlock">
+          <td class="height text-start" [class]="widget ? 'widget' : ''">
+            <a [routerLink]="['/block' | relativeUrl, block.id]" [state]="{ data: { block: block } }">{{ block.height }}</a>
+          </td>
+          <td *ngIf="isMempoolModule" class="pool text-start" [ngClass]="{'widget': widget}">
+            <ng-container *ngIf="block.extras?.pool as pool">
+              <div class="tooltip-custom">
+                <a *ngIf="indexingAvailable; else unlinkedPool" class="clear-link" [routerLink]="['/mining/pool' | relativeUrl, pool.slug]">
+                  <app-mining-pool [slug]="pool.slug" [name]="pool.name" [logoStyle]="'width:22px;height:22px;'" [textClass]="'truncate'"></app-mining-pool>
+                </a>
+                <ng-template #unlinkedPool>
+                  <app-mining-pool [slug]="pool.slug" [name]="pool.name" [logoStyle]="'width:22px;height:22px;'" [textClass]="'truncate'"></app-mining-pool>
+                </ng-template>
+                <span *ngIf="!widget && block.extras?.coinbaseRaw" class="tooltiptext badge bg-secondary scriptmessage">{{ block.extras.coinbaseRaw | hex2ascii }}</span>
+              </div>
+            </ng-container>
+          </td>
+          <td class="timestamp" *ngIf="!widget" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">
+            <app-timestamp [customFormat]="'yyyy-MM-dd HH:mm:ss'" [unixTime]="block.timestamp" [hideTimeSince]="true"></app-timestamp>
+          </td>
+          <td *ngIf="isMempoolModule" class="reward text-end" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">
+            <app-amount [satoshis]="block.extras.reward" [noFiat]="true" digitsInfo="1.2-2"></app-amount>
+          </td>
+          <td *ngIf="isMempoolModule" class="fees text-end" [class]="isMempoolModule ? '' : 'legacy'">
+            <app-amount [satoshis]="block.extras.totalFees" [noFiat]="true" digitsInfo="1.2-2"></app-amount>
+          </td>
+          <td class="txs text-end" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">
+            {{ block.tx_count | number }}
+          </td>
+          <td class="size" *ngIf="!widget" [class]="isMempoolModule ? '' : 'legacy'">
+            <div class="progress">
+              <div class="progress-bar progress-mempool" role="progressbar"
+                [ngStyle]="{'width': blockWeightProgress(block) }"></div>
+              <div class="progress-text" [innerHTML]="block.size | bytes: 2"></div>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+      <ng-template #skeleton>
+        <tbody>
+          <tr *ngFor="let item of skeletonLines">
+            <td class="height text-start" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">
+              <span class="skeleton-loader" style="max-width: 75px"></span>
+            </td>
+            <td *ngIf="isMempoolModule" class="pool" [ngClass]="{'widget': widget}">
+              <span class="skeleton-loader" style="max-width: 130px"></span>
+            </td>
+            <td class="timestamp" *ngIf="!widget" [class]="isMempoolModule ? '' : 'legacy'">
+              <span class="skeleton-loader" style="max-width: 150px"></span>
+            </td>
+            <td *ngIf="isMempoolModule" class="reward text-end" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">
+              <span class="skeleton-loader" style="max-width: 75px"></span>
+            </td>
+            <td *ngIf="isMempoolModule" class="fees text-end" [class]="isMempoolModule ? '' : 'legacy'">
+              <span class="skeleton-loader" style="max-width: 75px"></span>
+            </td>
+            <td class="txs text-end" [ngClass]="{'widget': widget, 'legacy': !isMempoolModule}">
+              <span class="skeleton-loader" style="max-width: 75px"></span>
+            </td>
+            <td class="size" *ngIf="!widget" [class]="isMempoolModule ? '' : 'legacy'">
+              <span class="skeleton-loader"></span>
+            </td>
+          </tr>
+        </tbody>
+      </ng-template>
+    </table>
+
+    <ngb-pagination *ngIf="!widget" class="pagination-container float-end mt-2" [class]="isLoading ? 'disabled' : ''"
+      [collectionSize]="blocksCount" [rotate]="true" [maxSize]="maxSize" [pageSize]="15" [(page)]="page"
+      (pageChange)="pageChange(page)" [boundaryLinks]="true" [ellipses]="false">
+    </ngb-pagination>
+
+    <ng-template [ngIf]="!widget">
+      <div class="clearfix"></div>
+      <br>
+    </ng-template>
+  </div>
+  
+</div>

@@ -1,0 +1,16 @@
+<!-- xmr-space: replaced upstream Bitcoin features (SegWit / Taproot /
+     RBF) with Monero-equivalent badges read directly from the tx
+     payload. The upstream component is parameterised so the data
+     binding still uses [tx]; we just emit different badges based on
+     RingCT version, view-tag presence, and ring size. -->
+<span *ngIf="tx?.['rct_type'] != null" class="badge bg-success me-1"
+      placement="bottom" ngbTooltip="RingCT version — Monero's confidential transaction protocol">RingCT v{{ tx['rct_type'] }}</span>
+
+<span *ngIf="tx?.['rct_type'] != null && tx['rct_type'] >= 5" class="badge bg-success me-1"
+      placement="bottom" ngbTooltip="Bulletproof+ range proofs — smaller and faster than the original Bulletproofs">Bulletproof+</span>
+
+<span *ngIf="tx?.['has_view_tags']" class="badge bg-success me-1"
+      placement="bottom" ngbTooltip="Outputs use view tags — wallets scan this tx faster">View tags</span>
+
+<span *ngIf="tx?.vin?.[0]?.['ring_size']" class="badge bg-info me-1"
+      placement="bottom" ngbTooltip="Number of ring members per input (1 real + N decoys)">Ring {{ tx.vin[0]['ring_size'] }}</span>

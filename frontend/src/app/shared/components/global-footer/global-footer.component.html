@@ -1,0 +1,97 @@
+<footer [class]="{'services': isServicesPage}">
+  <div class="container-fluid">
+
+    <div class="row main" [class]="{'services': isServicesPage}">
+      <div class="col-md-12 branding mt-2">
+        <div class="main-logo" [class]="{'services': isServicesPage}">
+          @if (enterpriseInfo?.footer_img) {
+            <img [src]="enterpriseInfo?.footer_img" [alt]="enterpriseInfo.title" height="60px" class="enterprise-logo">
+          } @else {
+            <app-svg-images name="mempoolSpace" viewBox="0 0 500 126"></app-svg-images>
+          }
+        </div>
+        @if (!enterpriseInfo?.footer_img) {
+          <p class="explore-tagline-mobile">Privacy by default</p>
+        }
+        <div class="site-options language-selector d-flex justify-content-center align-items-center" [class]="{'services': isServicesPage}">
+          <div class="selector">
+            <app-language-selector></app-language-selector>
+          </div>
+          <!-- xmr-space: fiat selector kept (USD/EUR/...); timezone selector
+               kept (useful for block-time display). The amount selector is
+               intentionally not rendered because public Monero tx amounts
+               are RingCT-hidden and BTC/sats-era global toggles mislead. -->
+          <div class="selector">
+            <app-fiat-selector></app-fiat-selector>
+          </div>
+          <div class="selector">
+            <app-timezone-selector></app-timezone-selector>
+          </div>
+          @if (!env.customize?.theme) {
+            <div class="selector d-none" [ngClass]="isServicesPage ? 'd-lg-flex' : 'd-md-flex'">
+              <app-theme-selector></app-theme-selector>
+            </div>
+          }
+          <a *ngIf="stateService.isMempoolSpaceBuild" class="btn btn-purple sponsor d-none justify-content-center" [ngClass]="isServicesPage ? 'd-lg-flex' : 'd-md-flex'" [routerLink]="['/login']">
+            <span *ngIf="user" i18n="shared.my-account" class="nowrap">My Account</span>
+            <span *ngIf="!user" i18n="shared.sign-in" class="nowrap">Sign In</span>
+          </a>
+        </div>
+        @if (!env.customize?.theme) {
+          <div class="selector d-flex justify-content-center ms-auto me-auto mt-0" [ngClass]="isServicesPage ? 'd-lg-none' : 'd-md-none'">
+            <app-theme-selector class="add-margin"></app-theme-selector>
+          </div>
+        }
+        @if (!enterpriseInfo?.footer_img) {
+          <a *ngIf="stateService.isMempoolSpaceBuild" class="btn btn-purple sponsor d-flex justify-content-center ms-auto me-auto mt-0 mb-2" [ngClass]="isServicesPage ? 'd-lg-none' : 'd-md-none'" [routerLink]="['/login']">
+            <span *ngIf="user" i18n="shared.my-account" class="nowrap">My Account</span>
+            <span *ngIf="!user" i18n="shared.sign-in" class="nowrap">Sign In</span>
+          </a>
+          <p class="explore-tagline-desktop">Privacy by default</p>
+        }
+      </div>
+    </div>
+
+    <!-- xmr-space: upstream network-specific links (payment channels, mining
+         dashboard, replacement tools, fee-bump services, testnet/signet/liquid network
+         selector, broadcast/test/preview-tx tools, mempool research)
+         removed. Replaced with Monero-relevant categories. -->
+    <div class="row col-md-12 link-tree" [class]="{'services': isServicesPage}">
+      <div class="links">
+        <p class="category">Explore</p>
+        <p><a [routerLink]="['/' | relativeUrl]">Dashboard</a></p>
+        <p><a [routerLink]="['/blocks' | relativeUrl]">Recent Blocks</a></p>
+        <p><a [routerLink]="['/mempool-block/0' | relativeUrl]">Mempool wall</a></p>
+        <p><a href="https://github.com/xmrclub/monerospace-explorer" target="_blank" rel="noopener noreferrer">Source on GitHub</a></p>
+      </div>
+      <div class="links">
+        <p class="category">Learn</p>
+        <p><a href="https://www.getmonero.org/resources/moneropedia/" target="_blank" rel="noopener noreferrer">Moneropedia</a></p>
+        <p><a href="https://www.getmonero.org/resources/moneropedia/ringCT.html" target="_blank" rel="noopener noreferrer">What is RingCT?</a></p>
+        <p><a href="https://www.getmonero.org/resources/moneropedia/viewkey.html" target="_blank" rel="noopener noreferrer">View key</a></p>
+        <p><a href="https://www.getmonero.org/resources/moneropedia/transaction-proof.html" target="_blank" rel="noopener noreferrer">tx_proof signatures</a></p>
+        <p><a href="https://www.getmonero.org/resources/research-lab/" target="_blank" rel="noopener noreferrer">Monero research lab</a></p>
+      </div>
+      <div class="links">
+        <p class="category">explorer.xmr.club</p>
+        <p>MoneroSpace instance</p>
+        <p><a href="https://mempool.space" target="_blank" rel="noopener noreferrer">mempool.space</a> → <a href="https://github.com/n0/monerospace-org" target="_blank" rel="noopener noreferrer">MoneroSpace</a> → this instance</p>
+        <p><a href="https://github.com/xmrclub/monerospace-explorer" target="_blank" rel="noopener noreferrer">Released under AGPLv3</a></p>
+        <p>Daemon:<br><code style="font-size: 0.78em; color: var(--tooltip-grey); word-break: break-all;">node.kyc.rip + Cake fallback</code></p>
+      </div>
+      <div class="links">
+        <p class="category" i18n="footer.legal">Legal</p>
+        <p><a [routerLink]="['/terms-of-service']" i18n="shared.terms-of-service|Terms of Service">Terms of Service</a></p>
+        <p><a [routerLink]="['/privacy-policy']" i18n="shared.privacy-policy|Privacy Policy">Privacy Policy</a></p>
+        <p><a [routerLink]="['/trademark-policy']" i18n="shared.trademark-policy|Trademark Policy">Trademark Policy</a></p>
+        <p><a href="/3rdpartylicenses.txt" i18n="shared.trademark-policy|Third-party Licenses">Third-party Licenses</a></p>
+      </div>
+    </div>
+
+    <div class="row version" [style]="{'background-color': isServicesPage ? 'var(--bg)' : ''}">
+      <div class="col-sm-12">
+        <p>v{{ packetJsonVersion }} [<a target="_blank" href="https://github.com/xmrclub/monerospace-explorer/commit/{{ frontendGitCommitHash }}">{{ frontendGitCommitHash }}</a>]</p>
+      </div>
+    </div>
+  </div>
+</footer>

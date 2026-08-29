@@ -1,0 +1,16 @@
+<div id="xmr-search-results-listbox" class="dropdown-menu show" role="listbox" aria-label="Monero search suggestions" *ngIf="results" [hidden]="!results.hashQuickMatch">
+  <ng-template [ngIf]="results.blockHeight">
+    <div class="card-title">Monero Block Height</div>
+    <button (click)="clickItem(0)" [class.active]="0 === activeIdx" [attr.aria-selected]="0 === activeIdx" type="button" role="option" class="dropdown-item">
+      <ng-container *ngTemplateOutlet="goTo; context: { $implicit: results.searchText }"></ng-container>
+    </button>
+  </ng-template>
+  <ng-template [ngIf]="results.blockOrTxHash">
+    <div class="card-title">Monero Block / Transaction</div>
+    <button (click)="clickItem(0)" [class.active]="0 === activeIdx" [attr.aria-selected]="0 === activeIdx" type="button" role="option" class="dropdown-item">
+      <ng-container *ngTemplateOutlet="goTo; context: { $implicit: results.searchText | shortenString : 13 }"></ng-container>
+    </button>
+  </ng-template>
+</div>
+
+<ng-template #goTo let-x i18n="search.go-to">Go to "{{ x }}"</ng-template>

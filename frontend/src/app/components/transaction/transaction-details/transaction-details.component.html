@@ -1,0 +1,158 @@
+<div class="box">
+  <div class="row">
+    @if (isMobile) {
+      <div class="col-sm">
+        <table class="table table-borderless table-striped">
+          <tbody>
+              <ng-container *ngTemplateOutlet="detailsLeft"></ng-container>
+              <ng-container *ngTemplateOutlet="detailsRight"></ng-container>
+          </tbody>
+        </table>
+      </div>
+    } @else {
+      <div class="col-sm">
+        <table class="table table-borderless table-striped">
+          <tbody>
+              <ng-container *ngTemplateOutlet="detailsLeft"></ng-container>
+          </tbody>
+        </table>
+      </div>
+      <div class="col-sm">
+        <table class="table table-borderless table-striped">
+          <tbody>
+              <ng-container *ngTemplateOutlet="detailsRight"></ng-container>
+          </tbody>
+        </table>
+      </div>
+    }
+  </div>
+</div>
+
+<ng-template #detailsLeft>
+  @if (tx?.status?.confirmed) {
+    <ng-container *ngTemplateOutlet="timestampRow"></ng-container>
+    <ng-container *ngTemplateOutlet="confirmedAfterRow"></ng-container>
+  } @else {
+    <ng-container *ngTemplateOutlet="firstSeenRow"></ng-container>
+    <ng-container *ngTemplateOutlet="etaRow"></ng-container>
+  }
+  <ng-container *ngTemplateOutlet="featuresRow"></ng-container>
+</ng-template>
+
+<ng-template #detailsRight>
+  <ng-container *ngTemplateOutlet="feeRow"></ng-container>
+  <ng-container *ngTemplateOutlet="feeRateRow"></ng-container>
+</ng-template>
+
+<ng-template #timestampRow>
+  @if (!isLoadingTx) {
+    <tr>
+      <td i18n="block.timestamp">Timestamp</td>
+      <td>
+        <app-timestamp [customFormat]="'yyyy-MM-dd HH:mm:ss'" [unixTime]="tx.status.block_time"></app-timestamp>
+      </td>
+    </tr>
+  } @else {
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  }
+</ng-template>
+
+<ng-template #confirmedAfterRow>
+  @if (!isLoadingTx) {
+    @if (transactionTime > 0) {
+      <tr>
+        <td i18n="transaction.confirmed|Transaction Confirmed state">Confirmed</td>
+        <td><app-time kind="span" [time]="tx.status.block_time - transactionTime" [fastRender]="true" [showTooltip]="true"></app-time></td>
+      </tr>
+    }
+  } @else {
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  }
+</ng-template>
+
+<ng-template #firstSeenRow>
+  @if (isLoadingTx) {
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  } @else if (transactionTime > 0) {
+    <tr>
+      <td i18n="transaction.first-seen|Transaction first seen">First seen</td>
+      <td><i><app-time kind="since" [time]="transactionTime" [fastRender]="true" [showTooltip]="true"></app-time></i></td>
+    </tr>
+  } @else if (isLoadingFirstSeen) {
+    <tr>
+      <td i18n="transaction.first-seen|Transaction first seen">First seen</td>
+      <td><span class="skeleton-loader"></span></td>
+    </tr>
+  }
+</ng-template>
+
+<ng-template #featuresRow>
+  @if (!isLoadingTx) {
+    @if (featuresEnabled) {
+      <tr>
+        <td class="td-width" i18n="transaction.features|Transaction features" id="featuresAnchor">Features</td>
+        <td>
+          <app-tx-features [tx]="tx"></app-tx-features>
+        </td>
+      </tr>
+    }
+  } @else {
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  }
+</ng-template>
+
+<ng-template #etaRow>
+  @if (!isLoadingTx) {
+    @if (!isCached && !unbroadcasted) {
+      <tr>
+        <td class="td-width align-items-center align-middle" i18n="transaction.eta|Transaction ETA">ETA</td>
+        <td>
+          <ng-container *ngIf="(ETA$ | async) as eta; else etaSkeleton">
+            @if (eta.blocks >= 7) {
+              <span i18n="transaction.eta.not-any-time-soon|Transaction ETA mot any time soon">Not any time soon</span>
+            } @else {
+              <app-time kind="until" [time]="eta.time" [fastRender]="false" [fixedRender]="true"></app-time>
+            }
+          </ng-container>
+          <ng-template #etaSkeleton>
+            <span class="skeleton-loader"></span>
+          </ng-template>
+        </td>
+      </tr>
+    }
+  } @else if (!unbroadcasted){
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  }
+</ng-template>
+
+<ng-template #feeRow>
+  @if (!isLoadingTx) {
+    <tr>
+      <td class="td-width" i18n="transaction.fee|Transaction fee">Fee</td>
+      <td class="text-wrap">{{ (tx.fee | number) ?? '-' }} <span class="symbol">atomic</span>
+        <span class="fiat"><app-fiat *ngIf="tx.fee >= 0" [blockConversion]="tx.price" [value]="tx.fee"></app-fiat></span>
+      </td>
+    </tr>
+  } @else {
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  }
+</ng-template>
+
+<ng-template #feeRateRow>
+  @if (!isLoadingTx) {
+    <tr>
+      <td i18n="transaction.fee-rate|Transaction fee rate">Fee rate</td>
+      <td>
+        <app-fee-rate [fee]="tx.feePerVsize"></app-fee-rate>
+      </td>
+    </tr>
+  } @else {
+    <ng-container *ngTemplateOutlet="skeletonDetailsRow"></ng-container>
+  }
+</ng-template>
+
+<ng-template #skeletonDetailsRow>
+  <tr>
+    <td><span class="skeleton-loader"></span></td>
+  </tr>
+</ng-template>

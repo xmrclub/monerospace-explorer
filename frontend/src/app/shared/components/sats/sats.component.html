@@ -1,0 +1,5 @@
+<span *ngIf="valueOverride !== undefined">{{ valueOverride }}</span>
+<span *ngIf="valueOverride === undefined">&lrm;{{ addPlus && satoshis >= 0 ? '+' : '' }}{{ satoshis | number : digitsInfo }} </span>
+<span class="symbol">
+  atomic
+</span>

@@ -1,0 +1,168 @@
+<app-indexing-progress></app-indexing-progress>
+
+<div class="container-xl pool-page" *ngIf="!error; else errorTemplate">
+  <ng-container *ngIf="poolStats$ | async as poolStats; else loadingMain">
+    <header class="pool-header" [attr.data-cy]="'pool-detail-' + poolStats.pool.slug">
+      <div class="pool-title">
+        <app-mining-pool
+          [slug]="poolStats.pool.slug"
+          [name]="poolStats.pool.name"
+          [showName]="false"
+          [logoStyle]="'width:50px;height:50px;'"
+          [logoClass]="'me-3'">
+        </app-mining-pool>
+        <h1>{{ poolStats.pool.name }}</h1>
+      </div>
+      <a class="btn btn-sm btn-outline-primary" [routerLink]="['/graphs/mining/pools' | relativeUrl]" i18n="mining.all-pools">All pools</a>
+    </header>
+
+    <section class="pool-summary-grid">
+      <div class="summary-cell">
+        <span i18n="mining.hashrate-24h">Hashrate (24h)</span>
+        <strong>{{ poolStats.estimatedHashrate | amountShortener : 3 : 'H/s' : false : true }}</strong>
+      </div>
+      <div class="summary-cell">
+        <span i18n="24h">Blocks (24h)</span>
+        <strong>{{ formatNumber(poolStats.blockCount['24h'], locale, '1.0-0') }} <small>({{ formatNumber(100 * poolStats.blockShare['24h'], locale, '1.0-2') }}%)</small></strong>
+      </div>
+      <div class="summary-cell">
+        <span i18n="1w">1w</span>
+        <strong>{{ formatNumber(poolStats.blockCount['1w'], locale, '1.0-0') }} <small>({{ formatNumber(100 * poolStats.blockShare['1w'], locale, '1.0-2') }}%)</small></strong>
+      </div>
+      <div class="summary-cell">
+        <span i18n="all">All</span>
+        <strong>{{ formatNumber(poolStats.blockCount['all'], locale, '1.0-0') }} <small>({{ formatNumber(100 * poolStats.blockShare['all'], locale, '1.0-2') }}%)</small></strong>
+      </div>
+      <div class="summary-cell">
+        <span i18n="mining.total-reward">Reward</span>
+        <strong><app-amount [satoshis]="poolStats.totalReward" digitsInfo="1.2-2" [noFiat]="true" [ignoreViewMode]="true"></app-amount></strong>
+      </div>
+      <div class="summary-cell">
+        <span>Miner proofs</span>
+        <strong>{{ proofSummary(poolStats) }}</strong>
+        <small>{{ proofSecondary(poolStats.proofStats) }}</small>
+      </div>
+      <div class="summary-cell">
+        <span i18n="mining.tags">Tags</span>
+        <strong class="tags">{{ poolStats.tags.length ? poolStats.tags.join(', ') : '~' }}</strong>
+      </div>
+    </section>
+
+    <div class="chart" *browserOnly echarts [initOpts]="chartInitOptions" [options]="chartOptions"></div>
+    <div class="text-center loadingGraphs" *ngIf="!stateService.isBrowser || isLoading">
+      <div class="spinner-border text-light"></div>
+    </div>
+
+    <h2 i18n="master-page.blocks">Blocks</h2>
+    <table class="table table-borderless pool-blocks-table" [alwaysCallback]="true" infiniteScroll [infiniteScrollDistance]="1.5"
+      [infiniteScrollUpDistance]="1.5" [infiniteScrollThrottle]="50" (scrolled)="loadMore()">
+      <ng-container *ngIf="blocks$ | async as blocks; else skeleton">
+        <thead *ngIf="blocks.length > 0">
+          <th class="height" i18n="latest-blocks.height">Height</th>
+          <th class="timestamp" i18n="latest-blocks.timestamp">Timestamp</th>
+          <th class="mined" i18n="latest-blocks.mined">Mined</th>
+          <th class="proof">Proof</th>
+          <th class="reward text-end" i18n="latest-blocks.reward">Reward</th>
+          <th class="fees text-end" i18n="latest-blocks.fees">Fees</th>
+          <th class="txs text-end" i18n="dashboard.txs">TXs</th>
+          <th class="size" i18n="latest-blocks.size">Size</th>
+        </thead>
+        <tbody [style]="isLoading ? 'opacity: 0.75' : ''">
+          <tr *ngFor="let block of blocks; trackBy: trackByBlock" [attr.data-cy]="'pool-block-' + block.height">
+            <td class="height">
+              <a [routerLink]="['/block' | relativeUrl, block.id]" [state]="{ data: { block: block } }">{{ block.height }}</a>
+            </td>
+            <td class="timestamp">
+              <app-timestamp [customFormat]="'yyyy-MM-dd HH:mm:ss'" [unixTime]="block.timestamp" [hideTimeSince]="true"></app-timestamp>
+            </td>
+            <td class="mined">
+              <app-time kind="since" [time]="block.timestamp" [fastRender]="true" [showTooltip]="true"></app-time>
+            </td>
+            <td class="proof">
+              <a *ngIf="block.extras?.minerProof as proof; else noProof"
+                class="miner-proof-badge"
+                [ngClass]="proofBadgeClass(proof)"
+                [href]="proof.sourceUrl"
+                target="_blank"
+                rel="noopener"
+                [title]="proofTitle(proof)">
+                {{ proofBadgeLabel(proof) }}
+              </a>
+              <ng-template #noProof>
+                <span class="miner-proof-badge miner-proof-unknown" [title]="proofTitle(null)">Unlisted</span>
+              </ng-template>
+            </td>
+            <td class="reward text-end">
+              <app-amount [satoshis]="block.extras.reward" digitsInfo="1.2-2" [noFiat]="true" [ignoreViewMode]="true"></app-amount>
+            </td>
+            <td class="fees text-end">
+              <app-amount [satoshis]="block.extras.totalFees" digitsInfo="1.2-2" [noFiat]="true" [ignoreViewMode]="true"></app-amount>
+            </td>
+            <td class="txs text-end">
+              {{ block.tx_count | number }}
+            </td>
+            <td class="size">
+              <div class="progress">
+                <div class="progress-bar progress-mempool" role="progressbar"
+                  [ngStyle]="{'width': blockWeightProgress(block) }"></div>
+                <div class="progress-text" [innerHTML]="block.size | bytes: 2"></div>
+              </div>
+            </td>
+          </tr>
+          <tr *ngIf="blocks.length === 0">
+            <td colspan="8" class="text-center text-muted" i18n="mining.no-observed-blocks">No observed blocks yet.</td>
+          </tr>
+        </tbody>
+      </ng-container>
+
+      <ng-template #skeleton>
+        <thead>
+          <th class="height" i18n="latest-blocks.height">Height</th>
+          <th class="timestamp" i18n="latest-blocks.timestamp">Timestamp</th>
+          <th class="mined" i18n="latest-blocks.mined">Mined</th>
+          <th class="proof">Proof</th>
+          <th class="reward text-end" i18n="latest-blocks.reward">Reward</th>
+          <th class="fees text-end" i18n="latest-blocks.fees">Fees</th>
+          <th class="txs text-end" i18n="dashboard.txs">TXs</th>
+          <th class="size" i18n="latest-blocks.size">Size</th>
+        </thead>
+        <tbody>
+          <tr *ngFor="let item of [1,2,3,4,5]">
+            <td class="height"><span class="skeleton-loader"></span></td>
+            <td class="timestamp"><span class="skeleton-loader"></span></td>
+            <td class="mined"><span class="skeleton-loader"></span></td>
+            <td class="proof"><span class="skeleton-loader"></span></td>
+            <td class="reward text-end"><span class="skeleton-loader"></span></td>
+            <td class="fees text-end"><span class="skeleton-loader"></span></td>
+            <td class="txs text-end"><span class="skeleton-loader"></span></td>
+            <td class="size text-end"><span class="skeleton-loader"></span></td>
+          </tr>
+        </tbody>
+      </ng-template>
+    </table>
+  </ng-container>
+</div>
+
+<ng-template #loadingMain>
+  <div class="container-xl pool-page">
+    <div class="pool-header">
+      <div class="pool-title">
+        <div class="skeleton-loader logo"></div>
+        <div class="skeleton-loader title"></div>
+      </div>
+    </div>
+    <section class="pool-summary-grid">
+      <div class="summary-cell" *ngFor="let item of [1,2,3,4,5,6,7]">
+        <span class="skeleton-loader"></span>
+        <strong class="skeleton-loader"></strong>
+      </div>
+    </section>
+  </div>
+</ng-template>
+
+<ng-template #errorTemplate>
+  <br>
+  <app-http-error [error]="error">
+    <span i18n="pool.error.loading-pool-data">Error loading pool data.</span>
+  </app-http-error>
+</ng-template>

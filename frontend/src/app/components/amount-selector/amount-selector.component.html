@@ -1,0 +1,7 @@
+<div [formGroup]="amountForm" class="text-small text-center">
+    <select formControlName="mode" class="form-select form-select-sm form-control-secondary form-control mx-auto" style="width: 75px;" (change)="changeMode()">
+        <option value="xmr">XMR</option>
+        <option value="atomic">atomic</option>
+        <option value="fiat" i18n="shared.fiat|Fiat">Fiat</option>
+    </select>
+</div>
