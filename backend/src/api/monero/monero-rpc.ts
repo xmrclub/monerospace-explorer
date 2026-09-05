@@ -107,6 +107,17 @@ export class MoneroRpcPool {
   private lastWarning = '';
   private lastWarningAt = 0;
 
+  // Endpoints the primary (mnr.network) does not serve: the mempool holds
+  // unconfirmed txs that cannot be hash-verified against the chain, so the
+  // verifying proxy 403s them. Route these straight to a fallback (the local
+  // node) instead of hitting the primary and failing over on every poll.
+  private static readonly PRIMARY_SKIP_PATHS = new Set([
+    '/get_transaction_pool',
+    '/get_transaction_pool_hashes',
+    '/get_transaction_pool_hashes.bin',
+    '/get_transaction_pool_stats',
+  ]);
+
   constructor(private config: MoneroDaemonConfig) {
     this.primary = new MoneroRpc(config);
     this.fallbacks = (config.fallbackRpcUrls ?? [])
@@ -126,14 +137,28 @@ export class MoneroRpcPool {
   }
 
   public async raw<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
-    return this.withFallback((rpc) => rpc.raw<T>(path, body), `raw ${path}`);
+    return this.withFallback((rpc) => rpc.raw<T>(path, body), `raw ${path}`, this.skipsPrimary(path));
   }
 
   public async rawBytes(path: string, body: Buffer | Uint8Array): Promise<{ data: Buffer; contentType: string }> {
-    return this.withFallback((rpc) => rpc.rawBytes(path, body), `raw-bytes ${path}`);
+    return this.withFallback((rpc) => rpc.rawBytes(path, body), `raw-bytes ${path}`, this.skipsPrimary(path));
   }
 
-  private async withFallback<T>(call: (rpc: MoneroRpc) => Promise<T>, label: string): Promise<T> {
+  private skipsPrimary(path: string): boolean {
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return MoneroRpcPool.PRIMARY_SKIP_PATHS.has(p);
+  }
+
+  private async withFallback<T>(call: (rpc: MoneroRpc) => Promise<T>, label: string, preferFallback = false): Promise<T> {
+    if (preferFallback && this.fallbacks.length > 0) {
+      // Skip the primary entirely for endpoints it does not serve; try each
+      // fallback in order, and only fall back to the primary as a last resort.
+      let lastErr: unknown;
+      for (const rpc of this.fallbacks) {
+        try { return await call(rpc); } catch (err) { lastErr = err; }
+      }
+      try { return await call(this.primary); } catch (err) { throw lastErr ?? err; }
+    }
     const selected = await this.selectRpc();
     try {
       return await call(selected);
