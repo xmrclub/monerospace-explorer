@@ -107,15 +107,13 @@ export class MoneroRpcPool {
   private lastWarning = '';
   private lastWarningAt = 0;
 
-  // Endpoints the primary (mnr.network) does not serve: the mempool holds
-  // unconfirmed txs that cannot be hash-verified against the chain, so the
-  // verifying proxy 403s them. Route these straight to a fallback (the local
-  // node) instead of hitting the primary and failing over on every poll.
+  // monerod only serves the full mempool dump (/get_transaction_pool) in
+  // unrestricted mode, so no public/verifying node (incl. mnr.network) can
+  // answer it — it 403s (a denied call before quota, costing no Work Units).
+  // Route only this one endpoint to the local node; pool hashes/stats and
+  // per-tx reads still go through mnr, hash-verified.
   private static readonly PRIMARY_SKIP_PATHS = new Set([
     '/get_transaction_pool',
-    '/get_transaction_pool_hashes',
-    '/get_transaction_pool_hashes.bin',
-    '/get_transaction_pool_stats',
   ]);
 
   constructor(private config: MoneroDaemonConfig) {
