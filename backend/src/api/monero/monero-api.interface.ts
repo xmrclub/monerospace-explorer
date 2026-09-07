@@ -220,6 +220,13 @@ export interface MoneroDaemonConfig {
   /** Per-request timeout in ms. */
   timeoutMs: number;
   /**
+   * Timeout for the primary daemon only (defaults to timeoutMs). Worth
+   * lowering (e.g. 5000) when the primary is a remote verifying proxy and
+   * a fallback exists: a hung primary then costs one short timeout before
+   * failover instead of the full request timeout.
+   */
+  primaryTimeoutMs?: number;
+  /**
    * When a fallback is configured, require the primary daemon to be synced
    * before routing reads to it. This keeps a bootstrapping local node from
    * serving stale early-chain data while it catches up.

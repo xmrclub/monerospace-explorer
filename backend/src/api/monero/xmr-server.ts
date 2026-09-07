@@ -62,8 +62,9 @@ function main(): void {
     ? null
     : new XmrMinerProofRegistry();
 
+  // Shares the api's transport: one primary health state, one cache.
   const bus = new MoneroEventBus(
-    daemonConfig,
+    api,
     Number(process.env.XMR_POLL_MS ?? 3000),
   );
   bus.on('error', (err) => {

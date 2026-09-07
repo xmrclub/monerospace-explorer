@@ -3,6 +3,26 @@ import { IMoneroApi, MoneroDaemonConfig, MoneroRpcError } from './monero-api.int
 
 const RPC_RETRIES = Math.max(0, Number(process.env.MONEROD_RPC_RETRIES ?? 2));
 const RPC_RETRY_BACKOFF_MS = Math.max(0, Number(process.env.MONEROD_RPC_RETRY_BACKOFF_MS ?? 500));
+// MONEROD_RPC_TRACE=1 logs one line per daemon round trip (host, method, ms, outcome).
+const RPC_TRACE = ['1', 'true', 'yes', 'on'].includes(String(process.env.MONEROD_RPC_TRACE ?? '').toLowerCase());
+/** Health probes never wait longer than this, whatever the request timeout is. */
+const PROBE_TIMEOUT_CAP_MS = 3_000;
+
+export interface MoneroRpcOptions {
+  /**
+   * Max retries for transient errors (429 / 5xx / network). Defaults to
+   * MONEROD_RPC_RETRIES. A pool with alternative nodes sets this low: a
+   * second node is a better bet than a third attempt at the same one.
+   */
+  retries?: number;
+  /**
+   * When true, a timed-out request is NOT retried here; the caller (the
+   * pool) fails over to another node instead. Timeouts are the expensive
+   * failure — each attempt costs the full timeout — so only a single-node
+   * setup with nowhere else to go should ever retry them.
+   */
+  failFastOnTimeout?: boolean;
+}
 
 /**
  * Thin transport for the monerod daemon. Two flavours of endpoint:
@@ -20,9 +40,15 @@ const RPC_RETRY_BACKOFF_MS = Math.max(0, Number(process.env.MONEROD_RPC_RETRY_BA
 export class MoneroRpc {
   private client: AxiosInstance;
   public readonly rpcUrl: string;
+  private readonly traceHost: string;
+  private readonly retries: number;
+  private readonly failFastOnTimeout: boolean;
 
-  constructor(private config: MoneroDaemonConfig) {
+  constructor(private config: MoneroDaemonConfig, options: MoneroRpcOptions = {}) {
     this.rpcUrl = config.rpcUrl.replace(/\/$/, '');
+    try { this.traceHost = new URL(this.rpcUrl).host; } catch { this.traceHost = this.rpcUrl; }
+    this.retries = Math.max(0, options.retries ?? RPC_RETRIES);
+    this.failFastOnTimeout = options.failFastOnTimeout ?? false;
     this.client = axios.create({
       baseURL: this.rpcUrl,
       timeout: config.timeoutMs,
@@ -79,12 +105,28 @@ export class MoneroRpc {
     requestConfig?: AxiosRequestConfig,
   ): Promise<AxiosResponse<T>> {
     let lastError: unknown;
-    for (let attempt = 0; attempt <= RPC_RETRIES; attempt++) {
+    const label = path === '/json_rpc' && body && typeof body === 'object' && 'method' in (body as Record<string, unknown>)
+      ? `json_rpc:${String((body as Record<string, unknown>).method)}`
+      : path;
+    for (let attempt = 0; attempt <= this.retries; attempt++) {
+      const startedAt = Date.now();
       try {
-        return await this.client.post<T>(path, body, requestConfig);
+        const res = await this.client.post<T>(path, body, requestConfig);
+        if (RPC_TRACE) {
+          // eslint-disable-next-line no-console
+          console.log(`[xmr-space] rpc ${this.traceHost} ${label} ${Date.now() - startedAt}ms ok attempt=${attempt}`);
+        }
+        return res;
       } catch (err) {
         lastError = err;
-        if (attempt >= RPC_RETRIES || !isTransientRpcError(err)) {
+        if (RPC_TRACE) {
+          // eslint-disable-next-line no-console
+          console.log(`[xmr-space] rpc ${this.traceHost} ${label} ${Date.now() - startedAt}ms FAIL attempt=${attempt} ${formatError(err)}`);
+        }
+        if (attempt >= this.retries || !isTransientRpcError(err)) {
+          throw err;
+        }
+        if (this.failFastOnTimeout && isTimeoutError(err)) {
           throw err;
         }
         await sleep(RPC_RETRY_BACKOFF_MS * (attempt + 1));
@@ -96,114 +138,250 @@ export class MoneroRpc {
 
 /**
  * Sync-aware primary/fallback transport. The primary is normally the local
- * monerod; the fallback is a public daemon used while the local node is still
- * syncing or briefly unavailable.
+ * monerod (or a verifying proxy such as mnr.network); the fallbacks are
+ * public daemons used while the primary is syncing, down, or refusing a
+ * particular endpoint.
+ *
+ * Design rules, all learned the hard way:
+ *   - No user request ever waits on a health probe. Health state is
+ *     stale-while-revalidate: reads use the last known state and a probe
+ *     runs in the background once the state is older than the interval.
+ *   - A timed-out node is not retried; the request fails over instead.
+ *     Retrying a hung node three times turned a 10s timeout into a 45s
+ *     stall on every dashboard load.
+ *   - Per-path routing has memory. Endpoints the primary does not serve
+ *     (`/get_transaction_pool`) go to the fallbacks first, but the node
+ *     that last answered is tried first next time, and a node that failed
+ *     is skipped for the health-check interval.
  */
 export class MoneroRpcPool {
   private primary: MoneroRpc;
+  private primaryProbe: MoneroRpc;
   private fallbacks: MoneroRpc[];
   private primaryUsable: boolean | null = null;
   private primaryCheckedAt = 0;
+  private probeInflight: Promise<boolean> | null = null;
   private lastWarning = '';
   private lastWarningAt = 0;
+  /** Sticky routing for PRIMARY_SKIP_PATHS: path -> node that last served it. */
+  private pathPreferred = new Map<string, MoneroRpc>();
+  /** `${node}|${path}` -> epoch ms until which that node is skipped for that path. */
+  private pathBadUntil = new Map<string, number>();
+  /** Fallback node url -> epoch ms until which it is skipped on the general path. */
+  private fallbackBadUntil = new Map<string, number>();
 
   // monerod only serves the full mempool dump (/get_transaction_pool) in
-  // unrestricted mode, so no public/verifying node (incl. mnr.network) can
-  // answer it — it 403s (a denied call before quota, costing no Work Units).
-  // Route only this one endpoint to the local node; pool hashes/stats and
-  // per-tx reads still go through mnr, hash-verified.
+  // unrestricted mode, so a restricted public node or verifying proxy may
+  // 403 it (mnr.network's free tier does; Pro serves it). Prefer the
+  // fallbacks for this one endpoint — a local node is the cheap source and
+  // the data is unverifiable anyway — but keep the primary as a candidate
+  // and remember which node actually answers.
   private static readonly PRIMARY_SKIP_PATHS = new Set([
     '/get_transaction_pool',
   ]);
 
   constructor(private config: MoneroDaemonConfig) {
-    this.primary = new MoneroRpc(config);
-    this.fallbacks = (config.fallbackRpcUrls ?? [])
-      .filter((url) => url.trim().length > 0)
-      .map((rpcUrl) => new MoneroRpc({
-        ...config,
-        rpcUrl,
-        fallbackRpcUrls: [],
-        rpcUser: undefined,
-        rpcPassword: undefined,
-        requirePrimarySync: false,
-      }));
+    const fallbackUrls = (config.fallbackRpcUrls ?? []).filter((url) => url.trim().length > 0);
+    const hasFallback = fallbackUrls.length > 0;
+    const primaryTimeoutMs = Math.max(500, config.primaryTimeoutMs ?? config.timeoutMs);
+    // With somewhere else to go, one retry on 429/5xx is plenty and a
+    // timeout is not retried at all. Single-node keeps the env defaults.
+    const nodeOptions: MoneroRpcOptions = hasFallback
+      ? { retries: Math.min(1, RPC_RETRIES), failFastOnTimeout: true }
+      : {};
+    this.primary = new MoneroRpc({ ...config, timeoutMs: primaryTimeoutMs }, nodeOptions);
+    this.primaryProbe = new MoneroRpc(
+      { ...config, timeoutMs: Math.min(primaryTimeoutMs, PROBE_TIMEOUT_CAP_MS) },
+      { retries: 0, failFastOnTimeout: true },
+    );
+    this.fallbacks = fallbackUrls.map((rpcUrl) => new MoneroRpc({
+      ...config,
+      rpcUrl,
+      fallbackRpcUrls: [],
+      rpcUser: undefined,
+      rpcPassword: undefined,
+      requirePrimarySync: false,
+    }, nodeOptions));
   }
 
   public async jsonRpc<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    return this.withFallback((rpc) => rpc.jsonRpc<T>(method, params), `json-rpc ${method}`);
+    return this.withFallback(async (rpc) => {
+      const result = await rpc.jsonRpc<T>(method, params);
+      if (method === 'get_info' && rpc === this.primary) {
+        // Every get_info that flows through the primary (the event bus
+        // polls one every few seconds) doubles as a free health probe.
+        this.recordPrimaryInfo(result as unknown as IMoneroApi.Info);
+      }
+      return result;
+    }, `json-rpc ${method}`);
   }
 
   public async raw<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
-    return this.withFallback((rpc) => rpc.raw<T>(path, body), `raw ${path}`, this.skipsPrimary(path));
+    const normalized = path.startsWith('/') ? path : `/${path}`;
+    if (this.skipsPrimary(normalized)) {
+      return this.routeSkipPath((rpc) => rpc.raw<T>(normalized, body), `raw ${normalized}`, normalized);
+    }
+    return this.withFallback((rpc) => rpc.raw<T>(normalized, body), `raw ${normalized}`);
   }
 
   public async rawBytes(path: string, body: Buffer | Uint8Array): Promise<{ data: Buffer; contentType: string }> {
-    return this.withFallback((rpc) => rpc.rawBytes(path, body), `raw-bytes ${path}`, this.skipsPrimary(path));
+    const normalized = path.startsWith('/') ? path : `/${path}`;
+    if (this.skipsPrimary(normalized)) {
+      return this.routeSkipPath((rpc) => rpc.rawBytes(normalized, body), `raw-bytes ${normalized}`, normalized);
+    }
+    return this.withFallback((rpc) => rpc.rawBytes(normalized, body), `raw-bytes ${normalized}`);
+  }
+
+  /** Last known primary health, for diagnostics. */
+  public primaryHealth(): { usable: boolean | null; checkedAt: number } {
+    return { usable: this.primaryUsable, checkedAt: this.primaryCheckedAt };
   }
 
   private skipsPrimary(path: string): boolean {
-    const p = path.startsWith('/') ? path : `/${path}`;
-    return MoneroRpcPool.PRIMARY_SKIP_PATHS.has(p);
+    return MoneroRpcPool.PRIMARY_SKIP_PATHS.has(path);
   }
 
-  private async withFallback<T>(call: (rpc: MoneroRpc) => Promise<T>, label: string, preferFallback = false): Promise<T> {
-    if (preferFallback && this.fallbacks.length > 0) {
-      // Skip the primary entirely for endpoints it does not serve; try each
-      // fallback in order, and only fall back to the primary as a last resort.
-      let lastErr: unknown;
-      for (const rpc of this.fallbacks) {
-        try { return await call(rpc); } catch (err) { lastErr = err; }
+  private get healthIntervalMs(): number {
+    return Math.max(1_000, this.config.primaryHealthCheckIntervalMs ?? 15_000);
+  }
+
+  /**
+   * Sticky per-path routing for endpoints the primary may not serve.
+   * Candidate order: last node that answered, then fallbacks in config
+   * order, then the primary. Nodes that failed within the interval are
+   * skipped; if every candidate is marked bad they are all tried anyway
+   * (better a slow answer than none).
+   */
+  private async routeSkipPath<T>(call: (rpc: MoneroRpc) => Promise<T>, label: string, path: string): Promise<T> {
+    const candidates = [...this.fallbacks, this.primary];
+    const preferred = this.pathPreferred.get(path);
+    const ordered = preferred ? [preferred, ...candidates.filter((c) => c !== preferred)] : candidates;
+    const now = Date.now();
+    const live = ordered.filter((rpc) => (this.pathBadUntil.get(`${rpc.rpcUrl}|${path}`) ?? 0) <= now);
+    const attempts = live.length > 0 ? live : ordered;
+    let lastErr: unknown;
+    for (const rpc of attempts) {
+      try {
+        const result = await call(rpc);
+        this.pathPreferred.set(path, rpc);
+        this.pathBadUntil.delete(`${rpc.rpcUrl}|${path}`);
+        return result;
+      } catch (err) {
+        lastErr = err;
+        this.pathBadUntil.set(`${rpc.rpcUrl}|${path}`, Date.now() + this.healthIntervalMs);
+        if (this.pathPreferred.get(path) === rpc) {
+          this.pathPreferred.delete(path);
+        }
+        this.warn(`${rpc.rpcUrl} failed ${label}; skipping it for ${this.healthIntervalMs}ms: ${formatError(err)}`);
       }
-      try { return await call(this.primary); } catch (err) { throw lastErr ?? err; }
     }
+    throw lastErr;
+  }
+
+  private async withFallback<T>(call: (rpc: MoneroRpc) => Promise<T>, label: string): Promise<T> {
     const selected = await this.selectRpc();
+    const others = selected === this.primary
+      ? this.liveFallbacks()
+      : [...this.liveFallbacks().filter((rpc) => rpc !== selected), this.primary];
+    let lastErr: unknown;
     try {
       return await call(selected);
     } catch (err) {
-      const fallback = this.fallbacks[0];
-      if (selected === this.primary && fallback) {
-        this.primaryUsable = false;
-        this.primaryCheckedAt = Date.now();
-        this.warn(`primary ${this.primary.rpcUrl} failed ${label}; using fallback ${fallback.rpcUrl}: ${formatError(err)}`);
-        return call(fallback);
+      lastErr = err;
+      this.markFailed(selected);
+      if (others.length === 0) {
+        throw err;
       }
-      throw err;
+      this.warn(`${selected.rpcUrl} failed ${label}; failing over: ${formatError(err)}`);
+    }
+    for (const rpc of others) {
+      try {
+        const result = await call(rpc);
+        this.fallbackBadUntil.delete(rpc.rpcUrl);
+        return result;
+      } catch (err) {
+        lastErr = err;
+        this.markFailed(rpc);
+        this.warn(`${rpc.rpcUrl} failed ${label}: ${formatError(err)}`);
+      }
+    }
+    throw lastErr;
+  }
+
+  /** Fallbacks not marked bad within the interval; all of them if every one is (better slow than nothing). */
+  private liveFallbacks(): MoneroRpc[] {
+    const now = Date.now();
+    const live = this.fallbacks.filter((rpc) => (this.fallbackBadUntil.get(rpc.rpcUrl) ?? 0) <= now);
+    return live.length > 0 ? live : this.fallbacks;
+  }
+
+  private markFailed(rpc: MoneroRpc): void {
+    if (rpc === this.primary) {
+      this.markPrimaryUnusable();
+    } else {
+      this.fallbackBadUntil.set(rpc.rpcUrl, Date.now() + this.healthIntervalMs);
     }
   }
 
   private async selectRpc(): Promise<MoneroRpc> {
-    const fallback = this.fallbacks[0];
-    if (!fallback) {
+    if (this.fallbacks.length === 0) {
       return this.primary;
     }
-    if (!this.config.requirePrimarySync) {
-      return this.primary;
-    }
-    return await this.isPrimaryUsable() ? this.primary : fallback;
+    return await this.isPrimaryUsable() ? this.primary : this.liveFallbacks()[0];
   }
 
+  /**
+   * Stale-while-revalidate health state. Only the very first call (no
+   * state yet) waits for a probe; afterwards callers get the last known
+   * answer immediately and a single background probe refreshes it once
+   * it is older than the interval.
+   */
   private async isPrimaryUsable(): Promise<boolean> {
     const now = Date.now();
-    const interval = Math.max(1_000, this.config.primaryHealthCheckIntervalMs ?? 15_000);
-    if (this.primaryUsable !== null && now - this.primaryCheckedAt < interval) {
-      return this.primaryUsable;
+    if (this.primaryUsable === null) {
+      return this.probePrimary();
     }
+    if (now - this.primaryCheckedAt >= this.healthIntervalMs && !this.probeInflight) {
+      void this.probePrimary();
+    }
+    return this.primaryUsable;
+  }
 
-    this.primaryCheckedAt = now;
-    try {
-      const info = await this.primary.jsonRpc<IMoneroApi.Info>('get_info');
-      const status = daemonSyncStatus(info, this.config.maxPrimaryHeightLag ?? 10);
-      this.primaryUsable = status.usable;
-      if (!status.usable) {
-        this.warn(`primary ${this.primary.rpcUrl} not ready (${status.reason}); using fallback ${this.fallbacks[0]?.rpcUrl}`);
-      }
-      return status.usable;
-    } catch (err) {
-      this.primaryUsable = false;
-      this.warn(`primary ${this.primary.rpcUrl} health check failed; using fallback ${this.fallbacks[0]?.rpcUrl}: ${formatError(err)}`);
-      return false;
+  private probePrimary(): Promise<boolean> {
+    if (this.probeInflight) {
+      return this.probeInflight;
     }
+    this.probeInflight = (async () => {
+      try {
+        const info = await this.primaryProbe.jsonRpc<IMoneroApi.Info>('get_info');
+        return this.recordPrimaryInfo(info);
+      } catch (err) {
+        this.primaryUsable = false;
+        this.primaryCheckedAt = Date.now();
+        this.warn(`primary ${this.primary.rpcUrl} health check failed; using fallback ${this.fallbacks[0]?.rpcUrl}: ${formatError(err)}`);
+        return false;
+      } finally {
+        this.probeInflight = null;
+      }
+    })();
+    return this.probeInflight;
+  }
+
+  private recordPrimaryInfo(info: IMoneroApi.Info): boolean {
+    const status = this.config.requirePrimarySync
+      ? daemonSyncStatus(info, this.config.maxPrimaryHeightLag ?? 10)
+      : { usable: true, reason: 'ready' };
+    this.primaryUsable = status.usable;
+    this.primaryCheckedAt = Date.now();
+    if (!status.usable) {
+      this.warn(`primary ${this.primary.rpcUrl} not ready (${status.reason}); using fallback ${this.fallbacks[0]?.rpcUrl}`);
+    }
+    return status.usable;
+  }
+
+  private markPrimaryUnusable(): void {
+    this.primaryUsable = false;
+    this.primaryCheckedAt = Date.now();
   }
 
   private warn(message: string): void {
@@ -234,6 +412,16 @@ function daemonSyncStatus(info: IMoneroApi.Info, maxLag: number): { usable: bool
     return { usable: false, reason: `height=${height}, target_height=${targetHeight}` };
   }
   return { usable: true, reason: 'ready' };
+}
+
+function isTimeoutError(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) {
+    return false;
+  }
+  if (err.code && ['ETIMEDOUT', 'ECONNABORTED'].includes(err.code)) {
+    return true;
+  }
+  return /timeout/i.test(err.message);
 }
 
 function isTransientRpcError(err: unknown): boolean {

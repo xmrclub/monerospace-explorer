@@ -1,12 +1,14 @@
 import { EventEmitter } from 'events';
 import { IMoneroApi, MoneroDaemonConfig } from './monero-api.interface';
 import { MoneroRpcPool } from './monero-rpc';
+import { MoneroApi } from './monero-api';
 
 /**
- * Polls monerod and emits high-level events. Bypasses the per-call cache
- * in `MoneroApi` so we don't see stale snapshots — that cache exists to
- * shield the daemon from request storms, but for change-detection we need
- * the freshest possible view.
+ * Polls monerod and emits high-level events. Reads go through `MoneroApi`
+ * with `force=true`: the bus always sees a fresh view for change
+ * detection, and the fetch it pays for lands in the shared cache so the
+ * request paths (fees, mempool, dashboard snapshots) read it for free
+ * instead of each fetching the pool synchronously.
  *
  * Why polling and not ZMQ: monerod's ZMQ pub/sub is great when you control
  * the daemon, but most public RPC endpoints (cakewallet, xmr.node.live,
@@ -25,6 +27,7 @@ import { MoneroRpcPool } from './monero-rpc';
  */
 export class MoneroEventBus extends EventEmitter {
   private rpc: MoneroRpcPool;
+  private api: MoneroApi;
   private pollMs: number;
   private timer: NodeJS.Timeout | null = null;
   private lastHeight: number | null = null;
@@ -33,12 +36,18 @@ export class MoneroEventBus extends EventEmitter {
   private latestInfo: IMoneroApi.Info | null = null;
   private inflight = false;
 
-  constructor(config: MoneroDaemonConfig, pollMs = 3000) {
+  /**
+   * Pass the shared `MoneroApi` so the bus and the request paths use one
+   * transport (one health state, one set of caches). A bare config is
+   * still accepted for tests and standalone use.
+   */
+  constructor(source: MoneroDaemonConfig | MoneroApi, pollMs = 3000) {
     super();
     // Bump max listeners — every SSE connection adds 2 (block + mempool).
     // Default of 10 trips alarms when more than ~5 dashboards are open.
     this.setMaxListeners(0);
-    this.rpc = new MoneroRpcPool(config);
+    this.api = source instanceof MoneroApi ? source : new MoneroApi(source);
+    this.rpc = this.api.pool;
     this.pollMs = pollMs;
   }
 
@@ -75,7 +84,7 @@ export class MoneroEventBus extends EventEmitter {
     }
     this.inflight = true;
     try {
-      const info = await this.rpc.jsonRpc<IMoneroApi.Info>('get_info');
+      const info = await this.api.getInfo(true);
       this.latestInfo = info;
       const tipHeight = info.height - 1;
       if (this.lastHeight === null || this.lastTipHash === null) {
@@ -104,7 +113,7 @@ export class MoneroEventBus extends EventEmitter {
 
       // Mempool delta. The daemon's response is unsorted, so we work in
       // sets. A typical pool churn cycle is 5-15 txs/poll on mainnet.
-      const pool = await this.rpc.raw<IMoneroApi.TransactionPool>('/get_transaction_pool');
+      const pool = await this.api.getTransactionPool(true);
       const currentHashes = new Set((pool.transactions ?? []).map((t) => t.id_hash));
       const added: string[] = [];
       const removed: string[] = [];

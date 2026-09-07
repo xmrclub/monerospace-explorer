@@ -8,7 +8,18 @@ For this fork, the active production path is:
 
 - run the standalone Monero backend from `backend/src/api/monero/xmr-server.ts`
   via `backend/package.json`'s `start-production` script;
-- point `MONEROD_RPC_URL` at a trusted, synced monerod RPC endpoint;
+- point `MONEROD_RPC_URL` at a trusted, synced monerod RPC endpoint, and
+  `MONEROD_RPC_FALLBACK_URLS` at one or more public daemons. Make sure the
+  fallback actually answers `POST /get_transaction_pool` from the production
+  host (the full mempool dump is served by unrestricted nodes; e.g.
+  `https://node.kyc.rip` on 443 works, its bare `:18081`/`:18089` ports do
+  not). The backend fails over on the first timeout and skips a dead node for
+  `MONEROD_RPC_HEALTH_INTERVAL_MS`, but a permanently dead fallback still
+  costs one timeout per interval; see `../docker/README.md` for the full
+  list of `MONEROD_RPC_*` tuning knobs and `MONEROD_RPC_TRACE=1`;
+- if the primary is mnr.network, use a Pro token: the event bus alone sends
+  ~860k `get_info` calls/month at the default 3s poll, above the free tier's
+  500k/month and 5 req/s;
 - optionally configure `MONERO_WALLET_RPC_URL` only if tx_proof verification
   should be enabled;
 - enable `XMR_DATABASE_ENABLED=true` or `DATABASE_ENABLED=true` for durable XMR

@@ -11,31 +11,87 @@ import { createHash } from 'crypto';
  * same endpoint at once.
  *
  * Cache windows by call:
- *   getInfo            — 5s   (used by the dashboard top bar)
+ *   getInfo            — 5s   (used by the dashboard top bar; the event
+ *                              bus refreshes it every poll so reads hit)
  *   getBlockCount      — 5s
- *   getBlockByHash     — 60s  (immutable once confirmed; safe to cache long)
- *   getBlockByHeight   — 60s  (same)
- *   getTransactionPool — 5s   (mempool wall, mostly visualised)
+ *   getBlockByHash     — 60s near the tip, 600s once 10+ blocks deep
+ *   getBlockByHeight   — same
+ *   getTransactionPool — 15s  (ceiling only: the event bus force-refreshes
+ *                              it every poll, so reads are ~3s stale)
  *   getFeeEstimate     — 10s  (fee tiers move slowly)
+ *
+ * Identical calls that are already in flight share one promise, so a
+ * burst of dashboards connecting in the same second costs the daemon one
+ * fetch per distinct key, not one per client.
  *
  * NB: nothing here writes user-supplied keys anywhere. The daemon doesn't
  * have wallet endpoints exposed and we never proxy them.
  */
 export class MoneroApi {
   private rpc: MoneroRpcPool;
+  private inflight = new Map<string, Promise<unknown>>();
+  /** Highest tip height seen from get_info / get_block_count; picks block cache TTLs. */
+  private lastKnownTip = 0;
 
-  constructor(config: MoneroDaemonConfig) {
-    this.rpc = new MoneroRpcPool(config);
+  /** Accepts a config (builds its own pool) or an existing pool to share with the event bus. */
+  constructor(source: MoneroDaemonConfig | MoneroRpcPool) {
+    this.rpc = source instanceof MoneroRpcPool ? source : new MoneroRpcPool(source);
   }
 
-  /** Daemon info: height, hashrate-derivable difficulty, mempool size, version. */
-  public async getInfo(): Promise<IMoneroApi.Info> {
-    const cached = memoryCache.get<IMoneroApi.Info>('xmr', 'info');
-    if (cached) {
-      return cached;
+  /** The underlying transport, for callers that need the same health state (event bus). */
+  public get pool(): MoneroRpcPool {
+    return this.rpc;
+  }
+
+  /**
+   * Cache read + single-flight fetch. Concurrent callers for the same key
+   * await the same promise; the entry is removed on settle either way so
+   * a rejected fetch never poisons the key — the next caller simply
+   * fetches again.
+   */
+  private fetchOnce<T>(type: string, id: string, ttlSeconds: number | ((value: T) => number), fetcher: () => Promise<T>, force = false): Promise<T> {
+    if (!force) {
+      const cached = memoryCache.get<T>(type, id);
+      if (cached !== null && cached !== undefined) {
+        return Promise.resolve(cached);
+      }
     }
-    const info = await this.rpc.jsonRpc<IMoneroApi.Info>('get_info');
-    memoryCache.set('xmr', 'info', info, 5);
+    const key = `${type}:${id}`;
+    const pending = this.inflight.get(key);
+    if (pending) {
+      return pending as Promise<T>;
+    }
+    const run = (async () => {
+      const value = await fetcher();
+      const ttl = typeof ttlSeconds === 'function' ? ttlSeconds(value) : ttlSeconds;
+      memoryCache.set(type, id, value, ttl);
+      return value;
+    })();
+    this.inflight.set(key, run);
+    void run.finally(() => this.inflight.delete(key)).catch(() => undefined);
+    return run;
+  }
+
+  private noteTip(height: number): void {
+    if (Number.isFinite(height) && height > this.lastKnownTip) {
+      this.lastKnownTip = height;
+    }
+  }
+
+  /** Confirmed blocks 10+ deep are immutable in practice; near the tip keep the short window. */
+  private blockTtl(block: IMoneroApi.Block): number {
+    const height = Number(block.block_header?.height ?? 0);
+    return this.lastKnownTip > 0 && this.lastKnownTip - height >= 10 ? 600 : 60;
+  }
+
+  /**
+   * Daemon info: height, hashrate-derivable difficulty, mempool size, version.
+   * `force` bypasses the cache read (the event bus uses it for change
+   * detection) but still populates the cache for everyone else.
+   */
+  public async getInfo(force = false): Promise<IMoneroApi.Info> {
+    const info = await this.fetchOnce<IMoneroApi.Info>('xmr', 'info', 5, () => this.rpc.jsonRpc<IMoneroApi.Info>('get_info'), force);
+    this.noteTip(Number(info.height ?? 0) - 1);
     return info;
   }
 
@@ -60,35 +116,24 @@ export class MoneroApi {
 
   /** Just the height — cheaper than `getInfo` when that's all the caller needs. */
   public async getBlockCount(): Promise<number> {
-    const cached = memoryCache.get<number>('xmr', 'blockcount');
-    if (cached !== null) {
-      return cached;
-    }
-    const result = await this.rpc.jsonRpc<IMoneroApi.BlockCount>('get_block_count');
-    memoryCache.set('xmr', 'blockcount', result.count, 5);
-    return result.count;
+    const count = await this.fetchOnce<number>('xmr', 'blockcount', 5, async () => {
+      const result = await this.rpc.jsonRpc<IMoneroApi.BlockCount>('get_block_count');
+      return result.count;
+    });
+    this.noteTip(count - 1);
+    return count;
   }
 
   /** Full block by hash (header + miner tx + tx hashes). */
   public async getBlockByHash(hash: string): Promise<IMoneroApi.Block> {
-    const cached = memoryCache.get<IMoneroApi.Block>('xmr-block-hash', hash);
-    if (cached) {
-      return cached;
-    }
-    const block = await this.rpc.jsonRpc<IMoneroApi.Block>('get_block', { hash });
-    memoryCache.set('xmr-block-hash', hash, block, 60);
-    return block;
+    return this.fetchOnce<IMoneroApi.Block>('xmr-block-hash', hash, (b) => this.blockTtl(b),
+      () => this.rpc.jsonRpc<IMoneroApi.Block>('get_block', { hash }));
   }
 
   /** Full block by height. */
   public async getBlockByHeight(height: number): Promise<IMoneroApi.Block> {
-    const cached = memoryCache.get<IMoneroApi.Block>('xmr-block-height', String(height));
-    if (cached) {
-      return cached;
-    }
-    const block = await this.rpc.jsonRpc<IMoneroApi.Block>('get_block', { height });
-    memoryCache.set('xmr-block-height', String(height), block, 60);
-    return block;
+    return this.fetchOnce<IMoneroApi.Block>('xmr-block-height', String(height), (b) => this.blockTtl(b),
+      () => this.rpc.jsonRpc<IMoneroApi.Block>('get_block', { height }));
   }
 
   /**
@@ -109,15 +154,15 @@ export class MoneroApi {
     return result.headers ?? [];
   }
 
-  /** Mempool snapshot — list of pending txs with fees, weights, ages. */
-  public async getTransactionPool(): Promise<IMoneroApi.TransactionPool> {
-    const cached = memoryCache.get<IMoneroApi.TransactionPool>('xmr', 'mempool');
-    if (cached) {
-      return cached;
-    }
-    const pool = await this.rpc.raw<IMoneroApi.TransactionPool>('/get_transaction_pool');
-    memoryCache.set('xmr', 'mempool', pool, 5);
-    return pool;
+  /**
+   * Mempool snapshot — list of pending txs with fees, weights, ages.
+   * The event bus calls this with `force=true` every poll, which keeps the
+   * cached copy a few seconds old for every request path (fees, mempool,
+   * dashboard snapshots) without any of them fetching synchronously.
+   */
+  public async getTransactionPool(force = false): Promise<IMoneroApi.TransactionPool> {
+    return this.fetchOnce<IMoneroApi.TransactionPool>('xmr', 'mempool', 15,
+      () => this.rpc.raw<IMoneroApi.TransactionPool>('/get_transaction_pool'), force);
   }
 
   /**
@@ -141,17 +186,13 @@ export class MoneroApi {
     // Cache by sorted hash list; for single-hash lookups (the common case
     // in tx-detail views) this still hits the same key on repeated reads.
     const cacheKey = hashes.slice().sort().join(',');
-    const cached = memoryCache.get<IMoneroApi.TransactionEntry[]>('xmr-tx', cacheKey);
-    if (cached) {
-      return cached;
-    }
-    const resp = await this.rpc.raw<{ txs?: IMoneroApi.TransactionEntry[]; status: string }>(
-      '/get_transactions',
-      { txs_hashes: hashes, decode_as_json: true, prune: true },
-    );
-    const txs = resp.txs ?? [];
-    memoryCache.set('xmr-tx', cacheKey, txs, 30);
-    return txs;
+    return this.fetchOnce<IMoneroApi.TransactionEntry[]>('xmr-tx', cacheKey, 30, async () => {
+      const resp = await this.rpc.raw<{ txs?: IMoneroApi.TransactionEntry[]; status: string }>(
+        '/get_transactions',
+        { txs_hashes: hashes, decode_as_json: true, prune: true },
+      );
+      return resp.txs ?? [];
+    });
   }
 
   /** Convenience wrapper for the single-hash case. Returns `null` if not found. */
@@ -174,21 +215,16 @@ export class MoneroApi {
     }
 
     const cacheKey = `${getTxid ? 'txid' : 'no-txid'}:${outputs.map((o) => `${o.amount}:${o.index}`).join(',')}`;
-    const cached = memoryCache.get<IMoneroApi.GetOutsOutput[]>('xmr-outs', cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    const resp = await this.rpc.raw<IMoneroApi.GetOutsResponse>(
-      '/get_outs',
-      { outputs, get_txid: getTxid },
-    );
-    if (resp.status && resp.status !== 'OK') {
-      throw new Error(`monerod /get_outs returned ${resp.status}`);
-    }
-    const outs = resp.outs ?? [];
-    memoryCache.set('xmr-outs', cacheKey, outs, 3600);
-    return outs;
+    return this.fetchOnce<IMoneroApi.GetOutsOutput[]>('xmr-outs', cacheKey, 3600, async () => {
+      const resp = await this.rpc.raw<IMoneroApi.GetOutsResponse>(
+        '/get_outs',
+        { outputs, get_txid: getTxid },
+      );
+      if (resp.status && resp.status !== 'OK') {
+        throw new Error(`monerod /get_outs returned ${resp.status}`);
+      }
+      return resp.outs ?? [];
+    });
   }
 
   /**
@@ -214,59 +250,53 @@ export class MoneroApi {
     if (txHashes.length === 0) {
       return { totalFees: 0, medianFee: 0, minFee: 0, maxFee: 0, feeRange: [0, 0, 0, 0, 0, 0, 0], nTx: 0 };
     }
-    const cached = memoryCache.get<{
-      totalFees: number; medianFee: number; minFee: number; maxFee: number; feeRange: number[]; nTx: number;
-    }>('xmr-block-fees', blockHash);
-    if (cached) {
-      return cached;
-    }
-    // /get_transactions has a server-side batch limit; chunk to be safe.
-    const CHUNK = 100;
-    const chunks: string[][] = [];
-    for (let i = 0; i < txHashes.length; i += CHUNK) {
-      chunks.push(txHashes.slice(i, i + CHUNK));
-    }
-    const allTxs: IMoneroApi.TransactionEntry[] = [];
-    for (const chunk of chunks) {
-      const got = await this.getTransactionsByHashes(chunk);
-      allTxs.push(...got);
-    }
-    // Per-tx fee/byte rate. Each tx's wire blob length (pruned_as_hex
-    // when present, else as_hex) gives bytes; rct_signatures.txnFee
-    // gives fee. Skip the few entries that fail to JSON-parse.
-    const rates: number[] = [];
-    let totalFees = 0;
-    for (const t of allTxs) {
-      let fee = 0;
-      try {
-        const parsed = t.as_json ? JSON.parse(t.as_json) as IMoneroApi.TransactionJson : null;
-        fee = parsed?.rct_signatures?.txnFee ?? 0;
-      } catch {
-        fee = 0;
-      }
-      const blobBytes = t.pruned_as_hex
-        ? Math.floor(t.pruned_as_hex.length / 2)
-        : t.as_hex
-          ? Math.floor(t.as_hex.length / 2)
-          : 0;
-      if (blobBytes > 0 && fee > 0) {
-        rates.push(fee / blobBytes);
-      }
-      totalFees += fee;
-    }
-    rates.sort((a, b) => a - b);
-    const median = rates.length ? rates[Math.floor(rates.length / 2)] : 0;
-    const minFee = rates.length ? rates[0] : 0;
-    const maxFee = rates.length ? rates[rates.length - 1] : 0;
-    const feeRange = rates.length
-      ? [0, 0.2, 0.4, 0.5, 0.6, 0.8, 1].map((p) => rates[Math.min(rates.length - 1, Math.floor(p * (rates.length - 1)))])
-      : [0, 0, 0, 0, 0, 0, 0];
-    const result = { totalFees, medianFee: median, minFee, maxFee, feeRange, nTx: allTxs.length };
     // 24h cache — block fees never change but we don't want unbounded
     // memory growth across many days of uptime; the block-by-hash cache
     // already shares this lifecycle.
-    memoryCache.set('xmr-block-fees', blockHash, result, 86_400);
-    return result;
+    return this.fetchOnce('xmr-block-fees', blockHash, 86_400, async () => {
+      // /get_transactions has a server-side batch limit; chunk to be safe.
+      const CHUNK = 100;
+      const chunks: string[][] = [];
+      for (let i = 0; i < txHashes.length; i += CHUNK) {
+        chunks.push(txHashes.slice(i, i + CHUNK));
+      }
+      const allTxs: IMoneroApi.TransactionEntry[] = [];
+      for (const chunk of chunks) {
+        const got = await this.getTransactionsByHashes(chunk);
+        allTxs.push(...got);
+      }
+      // Per-tx fee/byte rate. Each tx's wire blob length (pruned_as_hex
+      // when present, else as_hex) gives bytes; rct_signatures.txnFee
+      // gives fee. Skip the few entries that fail to JSON-parse.
+      const rates: number[] = [];
+      let totalFees = 0;
+      for (const t of allTxs) {
+        let fee = 0;
+        try {
+          const parsed = t.as_json ? JSON.parse(t.as_json) as IMoneroApi.TransactionJson : null;
+          fee = parsed?.rct_signatures?.txnFee ?? 0;
+        } catch {
+          fee = 0;
+        }
+        const blobBytes = t.pruned_as_hex
+          ? Math.floor(t.pruned_as_hex.length / 2)
+          : t.as_hex
+            ? Math.floor(t.as_hex.length / 2)
+            : 0;
+        if (blobBytes > 0 && fee > 0) {
+          rates.push(fee / blobBytes);
+        }
+        totalFees += fee;
+      }
+      rates.sort((a, b) => a - b);
+      const median = rates.length ? rates[Math.floor(rates.length / 2)] : 0;
+      const minFee = rates.length ? rates[0] : 0;
+      const maxFee = rates.length ? rates[rates.length - 1] : 0;
+      const feeRange = rates.length
+        ? [0, 0.2, 0.4, 0.5, 0.6, 0.8, 1].map((p) => rates[Math.min(rates.length - 1, Math.floor(p * (rates.length - 1)))])
+        : [0, 0, 0, 0, 0, 0, 0];
+      return { totalFees, medianFee: median, minFee, maxFee, feeRange, nTx: allTxs.length };
+    });
   }
 
   /**
@@ -293,46 +323,43 @@ export class MoneroApi {
       return [];
     }
     const cacheKey = `${blockHash}:${hashTxSet(txHashes)}`;
-    const cached = memoryCache.get<ReturnType<MoneroApi['getBlockStrippedTxs']> extends Promise<infer R> ? R : never>('xmr-block-stripped', cacheKey);
-    if (cached) {
-      return cached;
-    }
-    const CHUNK = 100;
-    const chunks: string[][] = [];
-    for (let i = 0; i < txHashes.length; i += CHUNK) {
-      chunks.push(txHashes.slice(i, i + CHUNK));
-    }
-    const all: IMoneroApi.TransactionEntry[] = [];
-    for (const chunk of chunks) {
-      const got = await this.getTransactionsByHashes(chunk);
-      all.push(...got);
-    }
-    const stripped = all.map((t) => {
-      let fee = 0;
-      try {
-        const parsed = t.as_json ? JSON.parse(t.as_json) as IMoneroApi.TransactionJson : null;
-        fee = parsed?.rct_signatures?.txnFee ?? 0;
-      } catch {
-        fee = 0;
+    return this.fetchOnce('xmr-block-stripped', cacheKey, 86_400, async () => {
+      const CHUNK = 100;
+      const chunks: string[][] = [];
+      for (let i = 0; i < txHashes.length; i += CHUNK) {
+        chunks.push(txHashes.slice(i, i + CHUNK));
       }
-      const vsize = t.pruned_as_hex
-        ? Math.floor(t.pruned_as_hex.length / 2)
-        : t.as_hex
-          ? Math.floor(t.as_hex.length / 2)
-          : 0;
-      return {
-        txid: t.tx_hash,
-        fee,
-        vsize,
-        value: 0,
-        rate: vsize > 0 ? fee / vsize : 0,
-        flags: 0,
-        time: blockTimestamp,
-        acc: false,
-      };
+      const all: IMoneroApi.TransactionEntry[] = [];
+      for (const chunk of chunks) {
+        const got = await this.getTransactionsByHashes(chunk);
+        all.push(...got);
+      }
+      const stripped = all.map((t) => {
+        let fee = 0;
+        try {
+          const parsed = t.as_json ? JSON.parse(t.as_json) as IMoneroApi.TransactionJson : null;
+          fee = parsed?.rct_signatures?.txnFee ?? 0;
+        } catch {
+          fee = 0;
+        }
+        const vsize = t.pruned_as_hex
+          ? Math.floor(t.pruned_as_hex.length / 2)
+          : t.as_hex
+            ? Math.floor(t.as_hex.length / 2)
+            : 0;
+        return {
+          txid: t.tx_hash,
+          fee,
+          vsize,
+          value: 0,
+          rate: vsize > 0 ? fee / vsize : 0,
+          flags: 0,
+          time: blockTimestamp,
+          acc: false,
+        };
     });
-    memoryCache.set('xmr-block-stripped', cacheKey, stripped, 86_400);
     return stripped;
+    });
   }
 
   /**
@@ -344,13 +371,8 @@ export class MoneroApi {
    * more conservative slow tier.
    */
   public async getFeeEstimate(): Promise<IMoneroApi.FeeEstimate> {
-    const cached = memoryCache.get<IMoneroApi.FeeEstimate>('xmr', 'fees');
-    if (cached) {
-      return cached;
-    }
-    const fees = await this.rpc.jsonRpc<IMoneroApi.FeeEstimate>('get_fee_estimate', { grace_blocks: 10 });
-    memoryCache.set('xmr', 'fees', fees, 10);
-    return fees;
+    return this.fetchOnce<IMoneroApi.FeeEstimate>('xmr', 'fees', 10,
+      () => this.rpc.jsonRpc<IMoneroApi.FeeEstimate>('get_fee_estimate', { grace_blocks: 10 }));
   }
 }
 
@@ -372,6 +394,7 @@ export function moneroApiFromEnv(env: NodeJS.ProcessEnv = process.env): MoneroAp
 export function moneroDaemonConfigFromEnv(env: NodeJS.ProcessEnv = process.env): MoneroDaemonConfig {
   const rpcUrl = env.MONEROD_RPC_URL ?? 'https://xmr-node.cakewallet.com:18081';
   const timeoutMs = Number(env.MONEROD_RPC_TIMEOUT_MS ?? 10_000);
+  const primaryTimeoutRaw = Number(env.MONEROD_RPC_PRIMARY_TIMEOUT_MS ?? NaN);
   const fallbackRpcUrls = parseRpcUrls(env.MONEROD_RPC_FALLBACK_URLS ?? env.MONEROD_RPC_FALLBACK_URL);
   return {
     rpcUrl,
@@ -379,6 +402,7 @@ export function moneroDaemonConfigFromEnv(env: NodeJS.ProcessEnv = process.env):
     rpcUser: env.MONEROD_RPC_USER,
     rpcPassword: env.MONEROD_RPC_PASSWORD,
     timeoutMs,
+    primaryTimeoutMs: Number.isFinite(primaryTimeoutRaw) && primaryTimeoutRaw > 0 ? primaryTimeoutRaw : undefined,
     requirePrimarySync: parseBool(env.MONEROD_RPC_REQUIRE_SYNC, fallbackRpcUrls.length > 0),
     maxPrimaryHeightLag: Number(env.MONEROD_RPC_MAX_HEIGHT_LAG ?? 10),
     primaryHealthCheckIntervalMs: Number(env.MONEROD_RPC_HEALTH_INTERVAL_MS ?? 15_000),

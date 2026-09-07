@@ -192,6 +192,15 @@ export class MoneroWs {
    * snapshot.
    */
   private connState = new Map<WebSocket, ConnState>();
+  /**
+   * Single-flight + short TTL for the dashboard snapshot. Every WebSocket
+   * connect and every /api/v1/init-data hit builds the same payload; a
+   * page of reconnecting dashboards must not fan out N x 17 daemon calls.
+   * Invalidated on bus events so a new block/pool change shows up at once.
+   */
+  private snapshotInflight: Promise<Record<string, unknown>> | null = null;
+  private snapshotCached: { at: number; value: Record<string, unknown> } | null = null;
+  private static readonly SNAPSHOT_TTL_MS = 2_000;
 
   constructor(
     private api: MoneroApi,
@@ -206,11 +215,13 @@ export class MoneroWs {
     // Forward bus events to all connected clients. Each broadcast is
     // chained behind the previous one so order is deterministic.
     this.bus.on('block', (header: IMoneroApi.BlockHeader) => {
+      this.snapshotCached = null;
       this.broadcastQueue = this.broadcastQueue
         .catch(() => undefined)
         .then(() => this.broadcastNewBlock(header).catch(() => undefined));
     });
     this.bus.on('mempool-delta', () => {
+      this.snapshotCached = null;
       this.broadcastQueue = this.broadcastQueue
         .catch(() => undefined)
         .then(() => this.broadcastMempoolUpdate().catch(() => undefined));
@@ -339,7 +350,25 @@ export class MoneroWs {
    * Keep this in lock-step with `sendSnapshot` — both must produce the
    * same shape so the first render matches the first ws message.
    */
-  public async buildSnapshot(): Promise<Record<string, unknown>> {
+  public buildSnapshot(): Promise<Record<string, unknown>> {
+    const now = Date.now();
+    if (this.snapshotCached && now - this.snapshotCached.at < MoneroWs.SNAPSHOT_TTL_MS) {
+      return Promise.resolve(this.snapshotCached.value);
+    }
+    if (this.snapshotInflight) {
+      return this.snapshotInflight;
+    }
+    const run = this.buildSnapshotUncached()
+      .then((value) => {
+        this.snapshotCached = { at: Date.now(), value };
+        return value;
+      })
+      .finally(() => { this.snapshotInflight = null; });
+    this.snapshotInflight = run;
+    return run;
+  }
+
+  private async buildSnapshotUncached(): Promise<Record<string, unknown>> {
     const [info, fees, pool, recentBlocks, latestPrice] = await Promise.all([
       this.api.getInfo(),
       this.api.getFeeEstimate(),

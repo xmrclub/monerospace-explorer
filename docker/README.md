@@ -12,7 +12,23 @@ docker-compose up
 Important XMR overrides live in `docker-compose.yml` under `api.environment`:
 
 - `MONEROD_RPC_URL`, `MONEROD_RPC_USER`, `MONEROD_RPC_PASSWORD`
-- `MONEROD_RPC_TIMEOUT_MS`
+- `MONEROD_RPC_FALLBACK_URLS` (comma-separated public daemons used when the
+  primary is syncing, down, or refuses an endpoint)
+- `MONEROD_RPC_TIMEOUT_MS` (default 10000) and `MONEROD_RPC_PRIMARY_TIMEOUT_MS`
+  (primary only; set to `5000` when the primary is a remote verifying proxy
+  such as mnr.network and a fallback exists, so a hung primary costs one
+  short timeout before failover)
+- `MONEROD_RPC_HEALTH_INTERVAL_MS` (default 15000): how long a failed node is
+  skipped before a background probe re-checks it. Probes run off the request
+  path and only when no `get_info` has flowed through the primary recently,
+  so the steady-state cost is at most ~4 extra calls/minute
+- `MONEROD_RPC_TRACE=1`: log one line per daemon round trip (host, method,
+  ms, outcome) — the quickest way to see which node is slow in production
+- `XMR_POLL_MS` (default 3000): event-bus poll interval. Each poll is one
+  `get_info` plus one `/get_transaction_pool`; on a metered primary
+  (mnr.network free tier: 5 req/s, 500k calls/month) `5000` is the sane floor.
+  The bus poll also keeps the mempool and info caches warm for every request
+  path, so raising it trades a little dashboard freshness for daemon load
 - `XMR_INDEX_DIR`
 - `DATABASE_ENABLED`
 
