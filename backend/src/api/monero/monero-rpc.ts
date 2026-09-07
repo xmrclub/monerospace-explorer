@@ -149,10 +149,10 @@ export class MoneroRpc {
  *   - A timed-out node is not retried; the request fails over instead.
  *     Retrying a hung node three times turned a 10s timeout into a 45s
  *     stall on every dashboard load.
- *   - Per-path routing has memory. Endpoints the primary does not serve
- *     (`/get_transaction_pool`) go to the fallbacks first, but the node
- *     that last answered is tried first next time, and a node that failed
- *     is skipped for the health-check interval.
+ *   - Per-path routing has memory. Paths configured as fallback-first go
+ *     to the fallbacks before the primary, but the node that last answered
+ *     is tried first next time, and a node that failed is skipped for the
+ *     health-check interval.
  */
 export class MoneroRpcPool {
   private primary: MoneroRpc;
@@ -163,24 +163,25 @@ export class MoneroRpcPool {
   private probeInflight: Promise<boolean> | null = null;
   private lastWarning = '';
   private lastWarningAt = 0;
-  /** Sticky routing for PRIMARY_SKIP_PATHS: path -> node that last served it. */
+  /** Sticky routing for fallback-first paths: path -> node that last served it. */
   private pathPreferred = new Map<string, MoneroRpc>();
   /** `${node}|${path}` -> epoch ms until which that node is skipped for that path. */
   private pathBadUntil = new Map<string, number>();
   /** Fallback node url -> epoch ms until which it is skipped on the general path. */
   private fallbackBadUntil = new Map<string, number>();
 
-  // monerod only serves the full mempool dump (/get_transaction_pool) in
-  // unrestricted mode, so a restricted public node or verifying proxy may
-  // 403 it (mnr.network's free tier does; Pro serves it). Prefer the
-  // fallbacks for this one endpoint — a local node is the cheap source and
-  // the data is unverifiable anyway — but keep the primary as a candidate
-  // and remember which node actually answers.
-  private static readonly PRIMARY_SKIP_PATHS = new Set([
-    '/get_transaction_pool',
-  ]);
+  // Paths routed fallbacks-first (primary last). Empty unless configured:
+  // mnr.network serves a verified /get_transaction_pool, so the primary
+  // answers everything by default. Operators on a restricted primary (a
+  // public node in restricted mode, or a proxy tier that 403s the mempool
+  // dump) list the path in MONEROD_RPC_FALLBACK_FIRST_PATHS; the node that
+  // actually answers is remembered and failed ones skipped for the interval.
+  private readonly fallbackFirstPaths: Set<string>;
 
   constructor(private config: MoneroDaemonConfig) {
+    this.fallbackFirstPaths = new Set(
+      (config.fallbackFirstPaths ?? []).map((p) => p.trim()).filter(Boolean).map((p) => p.startsWith('/') ? p : `/${p}`),
+    );
     const fallbackUrls = (config.fallbackRpcUrls ?? []).filter((url) => url.trim().length > 0);
     const hasFallback = fallbackUrls.length > 0;
     const primaryTimeoutMs = Math.max(500, config.primaryTimeoutMs ?? config.timeoutMs);
@@ -238,7 +239,7 @@ export class MoneroRpcPool {
   }
 
   private skipsPrimary(path: string): boolean {
-    return MoneroRpcPool.PRIMARY_SKIP_PATHS.has(path);
+    return this.fallbacks.length > 0 && this.fallbackFirstPaths.has(path);
   }
 
   private get healthIntervalMs(): number {

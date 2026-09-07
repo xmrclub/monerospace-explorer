@@ -14,6 +14,10 @@ Important XMR overrides live in `docker-compose.yml` under `api.environment`:
 - `MONEROD_RPC_URL`, `MONEROD_RPC_USER`, `MONEROD_RPC_PASSWORD`
 - `MONEROD_RPC_FALLBACK_URLS` (comma-separated public daemons used when the
   primary is syncing, down, or refuses an endpoint)
+- `MONEROD_RPC_FALLBACK_FIRST_PATHS` (comma-separated daemon paths sent to the
+  fallbacks before the primary, e.g. `/get_transaction_pool` when the primary
+  is a restricted node or a proxy tier that 403s the mempool dump; empty by
+  default because mnr.network Pro serves a verified pool dump)
 - `MONEROD_RPC_TIMEOUT_MS` (default 10000) and `MONEROD_RPC_PRIMARY_TIMEOUT_MS`
   (primary only; set to `5000` when the primary is a remote verifying proxy
   such as mnr.network and a fallback exists, so a hung primary costs one

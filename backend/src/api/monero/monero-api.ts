@@ -159,6 +159,14 @@ export class MoneroApi {
    * The event bus calls this with `force=true` every poll, which keeps the
    * cached copy a few seconds old for every request path (fees, mempool,
    * dashboard snapshots) without any of them fetching synchronously.
+   *
+   * Served by the primary (mnr.network verifies each entry: blob hashes to
+   * its id, fee/weight/size recomputed) unless MONEROD_RPC_FALLBACK_FIRST_PATHS
+   * routes it elsewhere. Downstream reads id_hash, fee, weight, blob_size,
+   * receive_time, relayed, double_spend_seen and tx_json, all of which mnr
+   * populates; the daemon-internal fields it leaves empty (last_failed_*,
+   * max_used_block_*, kept_by_block, do_not_relay, last_relayed_time) are
+   * not used anywhere.
    */
   public async getTransactionPool(force = false): Promise<IMoneroApi.TransactionPool> {
     return this.fetchOnce<IMoneroApi.TransactionPool>('xmr', 'mempool', 15,
@@ -406,6 +414,7 @@ export function moneroDaemonConfigFromEnv(env: NodeJS.ProcessEnv = process.env):
     requirePrimarySync: parseBool(env.MONEROD_RPC_REQUIRE_SYNC, fallbackRpcUrls.length > 0),
     maxPrimaryHeightLag: Number(env.MONEROD_RPC_MAX_HEIGHT_LAG ?? 10),
     primaryHealthCheckIntervalMs: Number(env.MONEROD_RPC_HEALTH_INTERVAL_MS ?? 15_000),
+    fallbackFirstPaths: parseRpcUrls(env.MONEROD_RPC_FALLBACK_FIRST_PATHS),
   };
 }
 

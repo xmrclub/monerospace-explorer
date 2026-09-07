@@ -236,4 +236,11 @@ export interface MoneroDaemonConfig {
   maxPrimaryHeightLag?: number;
   /** How often to re-check primary daemon sync/health before using fallback. */
   primaryHealthCheckIntervalMs?: number;
+  /**
+   * Daemon paths to route to the fallbacks first (primary last), e.g.
+   * ['/get_transaction_pool'] when the primary is a restricted node or a
+   * proxy tier that 403s the mempool dump. Empty by default: mnr.network
+   * serves a verified pool dump, so the primary answers everything.
+   */
+  fallbackFirstPaths?: string[];
 }

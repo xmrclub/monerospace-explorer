@@ -280,7 +280,39 @@ describe('MoneroRpcPool', () => {
     }
   });
 
-  it('routes /get_transaction_pool past a hung fallback to the primary and remembers who answered', async () => {
+  it('serves /get_transaction_pool from the primary by default', async () => {
+    const primary = await makeRpcServer((path, body) => {
+      if (body.method === 'get_info') {
+        return { body: { result: syncedInfo } };
+      }
+      if (path === '/get_transaction_pool') {
+        return { body: { status: 'OK', transactions: [{ id_hash: 'primary' }] } };
+      }
+      return okCount();
+    });
+    const fallback = await makeRpcServer(() => ({ body: { status: 'OK', transactions: [{ id_hash: 'fallback' }] } }));
+
+    try {
+      const pool = new MoneroRpcPool({
+        rpcUrl: primary.url,
+        fallbackRpcUrls: [fallback.url],
+        timeoutMs: 400,
+        requirePrimarySync: true,
+        primaryHealthCheckIntervalMs: 5_000,
+      });
+      const first = await pool.raw<{ transactions: { id_hash: string }[] }>('/get_transaction_pool');
+      const second = await pool.raw<{ transactions: { id_hash: string }[] }>('/get_transaction_pool');
+      expect(first.transactions[0].id_hash).toBe('primary');
+      expect(second.transactions[0].id_hash).toBe('primary');
+      expect(fallback.paths).toEqual([]);
+      expect(primary.paths.filter((p) => p === '/get_transaction_pool')).toHaveLength(2);
+    } finally {
+      await primary.close();
+      await fallback.close();
+    }
+  });
+
+  it('routes a fallback-first path past a hung fallback to the primary and remembers who answered', async () => {
     const primary = await makeRpcServer((path, body) => {
       if (body.method === 'get_info') {
         return { body: { result: syncedInfo } };
@@ -304,6 +336,7 @@ describe('MoneroRpcPool', () => {
         timeoutMs: 400,
         requirePrimarySync: true,
         primaryHealthCheckIntervalMs: 5_000,
+        fallbackFirstPaths: ['/get_transaction_pool'],
       });
 
       const startedAt = Date.now();
@@ -358,6 +391,7 @@ describe('MoneroRpcPool', () => {
         timeoutMs: 400,
         requirePrimarySync: true,
         primaryHealthCheckIntervalMs: 5_000,
+        fallbackFirstPaths: ['/get_transaction_pool'],
       });
       // Candidate order is [fallbacks..., primary]; put the primary in the
       // middle by making the good fallback the last candidate.
@@ -403,6 +437,7 @@ describe('MoneroRpcPool', () => {
         timeoutMs: 400,
         requirePrimarySync: true,
         primaryHealthCheckIntervalMs: 5_000,
+        fallbackFirstPaths: ['/get_transaction_pool'],
       });
       await expect(pool.raw('/get_transaction_pool')).rejects.toThrow();
       expect(fallback.paths).toEqual(['/get_transaction_pool']);
